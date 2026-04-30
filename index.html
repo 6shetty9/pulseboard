@@ -315,14 +315,27 @@ function saveSession() {
   try { localStorage.setItem('pb_session', JSON.stringify({ accessToken: S.accessToken, refreshToken: S.refreshToken, vehicleId: S.vehicleId, vehicleName: S.vehicleName, channels: S.channels, cfg: S.cfg })); } catch(e) {}
 }
 
-function startAuth() {
+async function generatePKCE() {
+  const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  return { verifier, challenge };
+}
+
+async function startAuth() {
   const cid = document.getElementById('clientId').value.trim();
   if (!cid) { alert('Enter your Client ID first.'); return; }
   localStorage.setItem('pb_client_id', cid);
   localStorage.setItem('pb_client_secret', document.getElementById('clientSecret').value.trim());
   const state = Math.random().toString(36).slice(2);
   localStorage.setItem('pb_oauth_state', state);
-  const url = `${TESLA_AUTH}?response_type=code&client_id=${encodeURIComponent(cid)}&redirect_uri=${encodeURIComponent(REDIRECT)}&scope=${encodeURIComponent(SCOPES)}&state=${state}`;
+  const { verifier, challenge } = await generatePKCE();
+  localStorage.setItem('pb_code_verifier', verifier);
+  const url = `${TESLA_AUTH}?response_type=code&client_id=${encodeURIComponent(cid)}&redirect_uri=${encodeURIComponent(REDIRECT)}&scope=${encodeURIComponent(SCOPES)}&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`;
   window.open(url, '_blank');
 }
 
@@ -330,13 +343,14 @@ async function exchangeCode() {
   const code = document.getElementById('authCode').value.trim();
   const cid = localStorage.getItem('pb_client_id');
   const csec = localStorage.getItem('pb_client_secret');
+  const verifier = localStorage.getItem('pb_code_verifier');
   if (!code || !cid) { alert('Missing code or Client ID.'); return; }
   document.getElementById('authStatus').innerHTML = '<span class="spinner"></span> Exchanging code…';
   try {
     const r = await fetch(TESLA_TOKEN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: cid, client_secret: csec, code, redirect_uri: REDIRECT })
+      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: cid, client_secret: csec, code, redirect_uri: REDIRECT, code_verifier: verifier })
     });
     const d = await r.json();
     if (!d.access_token) throw new Error(d.error_description || 'Token exchange failed');
