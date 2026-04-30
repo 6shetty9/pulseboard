@@ -578,12 +578,15 @@ function loadCfgToForm() {
 }
 function disconnect() { localStorage.removeItem('pb_session'); location.reload(); }
 
-// Auto-detect auth code returned from callback redirect
-const urlParams = new URLSearchParams(window.location.search);
-const inboundCode = urlParams.get("code");
-if (inboundCode) {
-  window.history.replaceState({}, document.title, window.location.pathname);
-  document.getElementById("authCode").value = inboundCode;
+// Auto-detect auth code returned from callback via localStorage
+const storedCode = localStorage.getItem("pb_auth_code");
+const storedTs = parseInt(localStorage.getItem("pb_auth_code_ts") || "0");
+const codeAge = Date.now() - storedTs;
+if (storedCode && codeAge < 30000) {
+  // Code is fresh (under 30 seconds old) - use it
+  localStorage.removeItem("pb_auth_code");
+  localStorage.removeItem("pb_auth_code_ts");
+  document.getElementById("authCode").value = storedCode;
   const savedCid = localStorage.getItem("pb_client_id");
   const savedSec = localStorage.getItem("pb_client_secret");
   if (savedCid) document.getElementById("clientId").value = savedCid;
