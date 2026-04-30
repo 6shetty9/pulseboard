@@ -15,6 +15,8 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .success { color: #3B6D11; font-weight: 500; }
     .error { color: #A32D2D; }
+    .code-box { background: #f5f5f5; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 11px; color: #111; word-break: break-all; margin: 12px 0; text-align: left; border: 1px solid #e5e5e5; }
+    .btn { display: inline-block; margin-top: 12px; padding: 10px 24px; background: #E24B4A; color: #fff; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; border: none; }
   </style>
 </head>
 <body>
@@ -34,11 +36,13 @@
     if (error) {
       el.innerHTML = `<p class="error">Authorization failed: ${error}</p>`;
     } else if (code) {
+      // Store raw code in localStorage
       localStorage.setItem('pb_auth_code', code);
       localStorage.setItem('pb_auth_code_ts', Date.now().toString());
-      el.innerHTML = `<p class="success">✓ Authorized! Returning to PulseBoard…</p>`;
+      el.innerHTML = `<p class="success">✓ Authorized! Returning to PulseBoard…</p><p style="font-size:11px;color:#999;">Code: ${code.substring(0,20)}…</p>`;
+      // Pass code via localStorage only — no URL encoding issues
       setTimeout(() => {
-        window.location.href = 'https://6shetty9.github.io/pulseboard/?code=' + encodeURIComponent(code);
+        window.location.href = 'https://6shetty9.github.io/pulseboard/';
       }, 800);
     } else {
       el.innerHTML = `<p>No code found. <a href="https://6shetty9.github.io/pulseboard/">Back to PulseBoard</a></p>`;
