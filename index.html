@@ -317,7 +317,7 @@ function loadSession() {
 }
 
 function saveSession() {
-  try { localStorage.setItem('pb_session', JSON.stringify({ accessToken: S.accessToken, refreshToken: S.refreshToken, vehicleId: S.vehicleId, vehicleName: S.vehicleName, channels: S.channels, cfg: S.cfg })); } catch(e) {}
+  try { localStorage.setItem('pb_session', JSON.stringify({ accessToken: S.accessToken, refreshToken: S.refreshToken, vehicleId: S.vehicleId, vehicleName: S.vehicleName, vehicles: S.vehicles, channels: S.channels, cfg: S.cfg })); } catch(e) {}
 }
 
 async function generatePKCE() {
@@ -444,11 +444,19 @@ function renderVehiclePicker() {
   `).join('');
 }
 
-function showDash() {
+async function showDash() {
   document.getElementById('setupView').style.display = 'none';
   document.getElementById('dashView').style.display = 'block';
   document.getElementById('sessionVehicle').textContent = S.vehicleName || 'Tesla';
   loadCfgToForm();
+  // Always refresh vehicle list so picker is populated
+  if (S.vehicles.length === 0) {
+    try {
+      const r = await api('/vehicles');
+      const d = await r.json();
+      S.vehicles = d.response || [];
+    } catch(e) {}
+  }
   renderVehiclePicker();
   loadVehicleCard();
 }
