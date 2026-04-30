@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PulseBoard — Tesla Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f7f7f5;
+      --surface: #ffffff;
+      --border: #e5e5e3;
+      --text: #111;
+      --muted: #666;
+      --hint: #999;
+      --red: #E24B4A;
+      --red-bg: #FCEBEB;
+      --red-text: #A32D2D;
+      --green: #639922;
+      --green-bg: #EAF3DE;
+      --green-text: #3B6D11;
+      --amber-bg: #FAEEDA;
+      --amber-text: #854F0B;
+      --blue: #185FA5;
+      --radius: 10px;
+      --radius-sm: 6px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 1.5rem; height: 52px; display: flex; align-items: center; gap: 12px; }
+    .logo-mark { width: 28px; height: 28px; border-radius: 7px; background: var(--red); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .logo-mark svg { width: 16px; height: 16px; }
+    .logo-name { font-size: 16px; font-weight: 600; color: var(--text); }
+    .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .pill { font-size: 11px; font-weight: 500; padding: 3px 10px; border-radius: 20px; }
+    .pill-off { background: #f0f0ee; color: var(--hint); }
+    .pill-live { background: var(--red-bg); color: var(--red-text); }
+    .pill-ok { background: var(--green-bg); color: var(--green-text); }
+    .pill-warn { background: var(--amber-bg); color: var(--amber-text); }
+    .btn { padding: 7px 14px; font-size: 13px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font-weight: 500; }
+    .btn:hover { background: var(--bg); }
+    .btn-red { background: var(--red); color: #fff; border-color: var(--red); }
+    .btn-red:hover { background: #c93d3c; }
+    .btn-green { background: var(--green-bg); color: var(--green-text); border-color: #97C459; }
+    .btn-green:hover { background: #C0DD97; }
+    .container { max-width: 960px; margin: 0 auto; padding: 1.5rem; }
+    .tabs { display: flex; gap: 2px; margin-bottom: 1.25rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; width: fit-content; }
+    .tab { padding: 6px 16px; font-size: 13px; border-radius: 7px; border: none; background: transparent; color: var(--muted); cursor: pointer; font-weight: 500; }
+    .tab.active { background: var(--bg); color: var(--text); }
+    .tab:hover:not(.active) { color: var(--text); }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 12px; }
+    .card-title { font-size: 11px; color: var(--hint); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-bottom: 12px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-bottom: 12px; }
+    .stat { background: var(--bg); border-radius: var(--radius-sm); padding: 12px 14px; }
+    .stat-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 500; }
+    .stat-val { font-size: 22px; font-weight: 600; color: var(--text); }
+    .stat-sub { font-size: 11px; color: var(--hint); margin-top: 3px; }
+    .row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .row:last-child { border-bottom: none; }
+    .row-label { color: var(--muted); }
+    .row-val { color: var(--text); font-weight: 500; }
+    .inp-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 500; }
+    input[type=text], input[type=password] { width: 100%; padding: 9px 12px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); margin-bottom: 10px; outline: none; }
+    input:focus { border-color: #aaa; }
+    .alert-item { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: flex-start; }
+    .alert-item:last-child { border-bottom: none; }
+    .alert-icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; font-weight: 700; }
+    .icon-err { background: var(--red-bg); color: var(--red-text); }
+    .icon-warn { background: var(--amber-bg); color: var(--amber-text); }
+    .icon-ok { background: var(--green-bg); color: var(--green-text); }
+    .alert-title { font-size: 13px; font-weight: 500; }
+    .alert-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .alert-time { font-size: 11px; color: var(--hint); margin-top: 2px; }
+    .empty { text-align: center; padding: 2rem; color: var(--hint); font-size: 13px; }
+    .battery-track { height: 12px; background: var(--bg); border-radius: 6px; overflow: hidden; border: 1px solid var(--border); margin: 8px 0 4px; }
+    .battery-fill { height: 100%; border-radius: 6px; transition: width .5s; }
+    .fill-green { background: var(--green); }
+    .fill-amber { background: #BA7517; }
+    .fill-red { background: var(--red); }
+    .batt-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--hint); }
+    .channel-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .channel-row:last-child { border-bottom: none; }
+    .channel-info { display: flex; align-items: center; gap: 10px; }
+    .ch-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+    .ch-name { font-size: 13px; font-weight: 500; }
+    .ch-detail { font-size: 11px; color: var(--hint); margin-top: 1px; }
+    .toggle { width: 38px; height: 22px; border-radius: 11px; border: none; cursor: pointer; position: relative; transition: background .2s; flex-shrink: 0; }
+    .toggle.on { background: var(--green); }
+    .toggle.off { background: #ccc; }
+    .toggle::after { content: ''; position: absolute; width: 16px; height: 16px; border-radius: 50%; background: #fff; top: 3px; transition: left .2s; }
+    .toggle.on::after { left: 19px; }
+    .toggle.off::after { left: 3px; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--red); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--red); animation: pulseAnim 1.4s ease-in-out infinite; display: inline-block; }
+    @keyframes pulseAnim { 0%,100%{opacity:1;transform:scale(1);}50%{opacity:.4;transform:scale(1.4);} }
+    .infobox { background: var(--bg); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
+    .infobox a { color: var(--blue); }
+    .setup-wrap { max-width: 480px; margin: 3rem auto; text-align: center; }
+    .setup-icon { font-size: 48px; margin-bottom: 1rem; }
+    .setup-title { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+    .setup-desc { font-size: 14px; color: var(--muted); line-height: 1.6; margin-bottom: 1.5rem; }
+    .setup-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; text-align: left; margin-bottom: 12px; }
+    .step-num { width: 24px; height: 24px; border-radius: 50%; background: var(--red); color: #fff; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; vertical-align: middle; }
+    .step-label { font-size: 14px; font-weight: 500; vertical-align: middle; }
+    .auth-url-box { background: var(--bg); border-radius: var(--radius-sm); padding: 10px 12px; font-family: monospace; font-size: 11px; color: var(--text); word-break: break-all; margin: 10px 0; border: 1px solid var(--border); }
+    .flex-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .dot-online { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 5px; }
+    .dot-offline { width: 8px; height: 8px; border-radius: 50%; background: var(--hint); display: inline-block; margin-right: 5px; }
+    .vehicle-header { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+    .v-icon { width: 48px; height: 48px; border-radius: 10px; background: var(--bg); display: flex; align-items: center; justify-content: center; font-size: 24px; }
+    .v-name { font-size: 17px; font-weight: 600; }
+    .v-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    @media(max-width:600px){ .grid4{grid-template-columns:1fr 1fr;} .grid2{grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo-mark">
+    <svg viewBox="0 0 16 16" fill="none">
+      <polyline points="1,8 3,8 5,2 7,14 9,6 11,10 13,8 15,8" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+  <span class="logo-name">PulseBoard</span>
+  <div class="topbar-right">
+    <span class="pill pill-off" id="monitorPill">Monitor off</span>
+    <button class="btn" id="monitorToggleBtn" onclick="toggleMonitor()">Start monitor</button>
+  </div>
+</div>
+
+<div class="container">
+  <div id="setupView">
+    <div class="setup-wrap">
+      <div class="setup-icon">⚡</div>
+      <div class="setup-title">Connect your Tesla</div>
+      <div class="setup-desc">Sign in with your Tesla account to start monitoring your vehicle with PulseBoard.</div>
+
+      <div class="setup-card">
+        <div style="margin-bottom:14px;">
+          <span class="step-num">1</span><span class="step-label">Enter your Client ID</span>
+        </div>
+        <div class="inp-label">Tesla Client ID</div>
+        <input type="text" id="clientId" placeholder="Paste your Tesla Client ID…" />
+        <div class="inp-label">Tesla Client Secret</div>
+        <input type="password" id="clientSecret" placeholder="Paste your Tesla Client Secret…" />
+      </div>
+
+      <div class="setup-card">
+        <div style="margin-bottom:14px;">
+          <span class="step-num">2</span><span class="step-label">Authorize with Tesla</span>
+        </div>
+        <div class="infobox">Click the button below to open Tesla's login page. After signing in you'll be redirected back with an authorization code.</div>
+        <button class="btn btn-red" onclick="startAuth()" style="width:100%;text-align:center;">Sign in with Tesla →</button>
+      </div>
+
+      <div class="setup-card">
+        <div style="margin-bottom:14px;">
+          <span class="step-num">3</span><span class="step-label">Paste authorization code</span>
+        </div>
+        <div class="infobox">After signing in, copy the code from the callback page and paste it here.</div>
+        <div class="inp-label">Authorization code</div>
+        <input type="text" id="authCode" placeholder="Paste code from callback page…" />
+        <button class="btn btn-green" onclick="exchangeCode()" style="width:100%;text-align:center;">Connect PulseBoard</button>
+        <div id="authStatus" style="font-size:12px;color:var(--muted);margin-top:8px;text-align:center;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="dashView" style="display:none;">
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('monitor',this)">Sentry monitor</button>
+      <button class="tab" onclick="showTab('vehicle',this)">Vehicle</button>
+      <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
+      <button class="tab" onclick="showTab('notify',this)">Notifications</button>
+      <button class="tab" onclick="showTab('settings',this)">Settings</button>
+    </div>
+
+    <div id="tab-monitor">
+      <div class="grid4">
+        <div class="stat"><div class="stat-label">Sentry mode</div><div class="stat-val" id="sentryState">—</div><div class="stat-sub" id="sentryStateSub">—</div></div>
+        <div class="stat"><div class="stat-label">Events today</div><div class="stat-val" id="eventCount">0</div><div class="stat-sub" id="lastEventTime">No events yet</div></div>
+        <div class="stat"><div class="stat-label">Last poll</div><div class="stat-val" style="font-size:15px;" id="lastPollTime">—</div><div class="stat-sub">Every 60s</div></div>
+        <div class="stat"><div class="stat-label">Next poll</div><div class="stat-val" style="font-size:15px;" id="nextPoll">—</div><div class="stat-sub" id="pollStatus">Stopped</div></div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div class="card-title" style="margin:0;">Live sentry feed</div>
+          <div id="liveIndicator" style="display:none;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
+            <span class="pulse"></span> Monitoring
+          </div>
+        </div>
+        <div id="feedList"><div class="empty">Start the monitor to watch your vehicle.</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Controls</div>
+        <div class="flex-row">
+          <button class="btn" onclick="pollNow()">Poll now</button>
+          <button class="btn btn-green" onclick="sendCmd('set_sentry_mode','on')">Enable sentry</button>
+          <button class="btn" style="background:var(--red-bg);color:var(--red-text);border-color:#F09595;" onclick="sendCmd('set_sentry_mode','off')">Disable sentry</button>
+          <button class="btn" onclick="sendCmd('door_lock')">Lock doors</button>
+          <button class="btn" onclick="sendCmd('door_unlock')">Unlock doors</button>
+          <button class="btn" onclick="testAlert()">Test alert</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-vehicle" style="display:none;">
+      <div class="card" id="vehicleCard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+    </div>
+
+    <div id="tab-alerts" style="display:none;">
+      <div class="card"><div class="card-title">Alert history</div><div id="alertLog"><div class="empty">No alerts yet.</div></div></div>
+    </div>
+
+    <div id="tab-notify" style="display:none;">
+      <div class="infobox">All active channels fire simultaneously when a sentry event is detected.</div>
+      <div class="card">
+        <div class="card-title">Channels</div>
+        <div class="channel-row">
+          <div class="channel-info">
+            <div class="ch-icon" style="background:var(--amber-bg);">📲</div>
+            <div><div class="ch-name">Pushover (push notifications)</div><div class="ch-detail" id="pushoverDetail">Not configured</div></div>
+          </div>
+          <button class="toggle off" id="pushoverToggle" onclick="toggleCh('pushover',this)"></button>
+        </div>
+        <div class="channel-row">
+          <div class="channel-info">
+            <div class="ch-icon" style="background:#E6F1FB;">💬</div>
+            <div><div class="ch-name">SMS via Twilio</div><div class="ch-detail" id="smsDetail">Not configured</div></div>
+          </div>
+          <button class="toggle off" id="smsToggle" onclick="toggleCh('sms',this)"></button>
+        </div>
+        <div class="channel-row">
+          <div class="channel-info">
+            <div class="ch-icon" style="background:var(--green-bg);">✉️</div>
+            <div><div class="ch-name">Email via SendGrid</div><div class="ch-detail" id="emailDetail">Not configured</div></div>
+          </div>
+          <button class="toggle off" id="emailToggle" onclick="toggleCh('email',this)"></button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Pushover</div>
+        <div class="infobox">Free at <a href="https://pushover.net" target="_blank">pushover.net</a>. Install the Pushover app on your phone for instant alerts.</div>
+        <div class="inp-label">User key</div><input type="password" id="poUser" placeholder="Pushover user key…" oninput="saveCfg()" />
+        <div class="inp-label">App token</div><input type="password" id="poToken" placeholder="Pushover app token…" oninput="saveCfg()" />
+      </div>
+
+      <div class="card">
+        <div class="card-title">SMS (Twilio)</div>
+        <div class="infobox">Free trial at <a href="https://twilio.com" target="_blank">twilio.com</a>.</div>
+        <div class="inp-label">Account SID</div><input type="password" id="twSid" placeholder="ACxxxxxxxx…" oninput="saveCfg()" />
+        <div class="inp-label">Auth token</div><input type="password" id="twToken" placeholder="Auth token…" oninput="saveCfg()" />
+        <div class="inp-label">From number</div><input type="text" id="twFrom" placeholder="+1XXXXXXXXXX" oninput="saveCfg()" />
+        <div class="inp-label">Your number</div><input type="text" id="twTo" placeholder="+1XXXXXXXXXX" oninput="saveCfg()" />
+      </div>
+
+      <div class="card">
+        <div class="card-title">Email (SendGrid)</div>
+        <div class="infobox">Free at <a href="https://sendgrid.com" target="_blank">sendgrid.com</a>. Verify your sender address first.</div>
+        <div class="inp-label">API key</div><input type="password" id="sgKey" placeholder="SG.xxxxxxxx…" oninput="saveCfg()" />
+        <div class="inp-label">From email</div><input type="text" id="sgFrom" placeholder="alerts@yourdomain.com" oninput="saveCfg()" />
+        <div class="inp-label">To email</div><input type="text" id="sgTo" placeholder="you@email.com" oninput="saveCfg()" />
+      </div>
+      <button class="btn" onclick="testAlert()">Send test alert to all channels</button>
+    </div>
+
+    <div id="tab-settings" style="display:none;">
+      <div class="card">
+        <div class="card-title">Session</div>
+        <div class="row"><span class="row-label">Status</span><span class="row-val" id="sessionStatus">Connected</span></div>
+        <div class="row"><span class="row-label">Vehicle</span><span class="row-val" id="sessionVehicle">—</span></div>
+        <div style="margin-top:12px;"><button class="btn" onclick="disconnect()">Disconnect</button></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Alert thresholds</div>
+        <div class="row"><span class="row-label">Sentry turns off unexpectedly</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
+        <div class="row"><span class="row-label">Sentry camera event detected</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
+        <div class="row"><span class="row-label">Vehicle goes offline</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
+        <div class="row"><span class="row-label">Battery below 20%</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
+        <div class="row"><span class="row-label">Vehicle unlocked</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
+        <div class="row"><span class="row-label">Normal heartbeat</span><span class="row-val"><span class="pill pill-ok">Log only</span></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const REDIRECT = 'https://6shetty9.github.io/pulseboard/callback';
+const SCOPES = 'openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds vehicle_location';
+const TESLA_AUTH = 'https://auth.tesla.com/oauth2/v3/authorize';
+const TESLA_TOKEN = 'https://auth.tesla.com/oauth2/v3/token';
+const FLEET = 'https://fleet-api.prd.na.vn.cloud.tesla.com/api/1';
+
+let S = {
+  accessToken: null, refreshToken: null, vehicleId: null, vehicleName: null,
+  monitoring: false, pollTimer: null, countdownTimer: null, countdown: 60,
+  eventCount: 0, sentryOn: false, vehicleOnline: false, alerts: [],
+  channels: { pushover: false, sms: false, email: false },
+  cfg: {}
+};
+
+function loadSession() {
+  try {
+    const saved = localStorage.getItem('pb_session');
+    if (saved) { const d = JSON.parse(saved); Object.assign(S, d); return true; }
+  } catch(e) {}
+  return false;
+}
+
+function saveSession() {
+  try { localStorage.setItem('pb_session', JSON.stringify({ accessToken: S.accessToken, refreshToken: S.refreshToken, vehicleId: S.vehicleId, vehicleName: S.vehicleName, channels: S.channels, cfg: S.cfg })); } catch(e) {}
+}
+
+function startAuth() {
+  const cid = document.getElementById('clientId').value.trim();
+  if (!cid) { alert('Enter your Client ID first.'); return; }
+  localStorage.setItem('pb_client_id', cid);
+  localStorage.setItem('pb_client_secret', document.getElementById('clientSecret').value.trim());
+  const state = Math.random().toString(36).slice(2);
+  localStorage.setItem('pb_oauth_state', state);
+  const url = `${TESLA_AUTH}?response_type=code&client_id=${encodeURIComponent(cid)}&redirect_uri=${encodeURIComponent(REDIRECT)}&scope=${encodeURIComponent(SCOPES)}&state=${state}`;
+  window.open(url, '_blank');
+}
+
+async function exchangeCode() {
+  const code = document.getElementById('authCode').value.trim();
+  const cid = localStorage.getItem('pb_client_id');
+  const csec = localStorage.getItem('pb_client_secret');
+  if (!code || !cid) { alert('Missing code or Client ID.'); return; }
+  document.getElementById('authStatus').innerHTML = '<span class="spinner"></span> Exchanging code…';
+  try {
+    const r = await fetch(TESLA_TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: cid, client_secret: csec, code, redirect_uri: REDIRECT })
+    });
+    const d = await r.json();
+    if (!d.access_token) throw new Error(d.error_description || 'Token exchange failed');
+    S.accessToken = d.access_token;
+    S.refreshToken = d.refresh_token;
+    await detectVehicle();
+    saveSession();
+    showDash();
+  } catch(e) {
+    document.getElementById('authStatus').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function refreshAccessToken() {
+  const cid = localStorage.getItem('pb_client_id');
+  const csec = localStorage.getItem('pb_client_secret');
+  if (!S.refreshToken || !cid) return false;
+  try {
+    const r = await fetch(TESLA_TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', client_id: cid, client_secret: csec, refresh_token: S.refreshToken })
+    });
+    const d = await r.json();
+    if (!d.access_token) return false;
+    S.accessToken = d.access_token;
+    S.refreshToken = d.refresh_token || S.refreshToken;
+    saveSession();
+    return true;
+  } catch(e) { return false; }
+}
+
+async function api(path, method='GET', body=null) {
+  const opts = { method, headers: { Authorization: 'Bearer ' + S.accessToken, 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  let r = await fetch(FLEET + path, opts);
+  if (r.status === 401) {
+    const ok = await refreshAccessToken();
+    if (ok) { opts.headers.Authorization = 'Bearer ' + S.accessToken; r = await fetch(FLEET + path, opts); }
+  }
+  return r;
+}
+
+async function detectVehicle() {
+  const r = await api('/vehicles');
+  const d = await r.json();
+  const v = d.response && d.response[0];
+  if (v) { S.vehicleId = v.id; S.vehicleName = v.display_name || 'My Tesla'; }
+}
+
+function showDash() {
+  document.getElementById('setupView').style.display = 'none';
+  document.getElementById('dashView').style.display = 'block';
+  document.getElementById('sessionVehicle').textContent = S.vehicleName || 'Tesla';
+  loadCfgToForm();
+  loadVehicleCard();
+}
+
+function showTab(name, el) {
+  ['monitor','vehicle','alerts','notify','settings'].forEach(t => {
+    document.getElementById('tab-'+t).style.display = t===name ? 'block' : 'none';
+  });
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  if (name === 'vehicle') loadVehicleCard();
+}
+
+async function loadVehicleCard() {
+  const el = document.getElementById('vehicleCard');
+  el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading vehicle data…</div>';
+  try {
+    const r = await api(`/vehicles/${S.vehicleId}/vehicle_data?endpoints=charge_state%3Bclimate_state%3Bdrive_state%3Bvehicle_state`);
+    if (!r.ok) { el.innerHTML = '<div class="empty">Vehicle may be asleep. Try polling first.</div>'; return; }
+    const d = (await r.json()).response;
+    const cs = d.charge_state, cl = d.climate_state, ds = d.drive_state, vs = d.vehicle_state;
+    const batt = cs.battery_level;
+    const bc = batt >= 50 ? 'fill-green' : batt >= 25 ? 'fill-amber' : 'fill-red';
+    const fT = c => Math.round(c * 9/5 + 32) + '°F';
+    el.innerHTML = `
+      <div class="vehicle-header">
+        <div class="v-icon">🚗</div>
+        <div>
+          <div class="v-name">${S.vehicleName}</div>
+          <div class="v-sub"><span class="${d.state==='online'?'dot-online':'dot-offline'}"></span>${d.state} · ${vs.locked?'Locked':'Unlocked'}</div>
+        </div>
+      </div>
+      <div class="card-title">Battery</div>
+      <div style="font-size:22px;font-weight:600;">${batt}% <span style="font-size:14px;font-weight:400;color:var(--muted);">${Math.round(cs.battery_range)} mi range</span></div>
+      <div class="battery-track"><div class="battery-fill ${bc}" style="width:${batt}%"></div></div>
+      <div class="batt-labels"><span>0%</span><span>Limit: ${cs.charge_limit_soc}%</span><span>100%</span></div>
+      <div style="margin-top:16px;" class="card-title">Details</div>
+      <div class="row"><span class="row-label">Charging</span><span class="row-val">${cs.charging_state}</span></div>
+      <div class="row"><span class="row-label">Inside temp</span><span class="row-val">${fT(cl.inside_temp)}</span></div>
+      <div class="row"><span class="row-label">Outside temp</span><span class="row-val">${fT(cl.outside_temp)}</span></div>
+      <div class="row"><span class="row-label">Climate</span><span class="row-val">${cl.is_climate_on?'On':'Off'}</span></div>
+      <div class="row"><span class="row-label">Odometer</span><span class="row-val">${Math.round(vs.odometer).toLocaleString()} mi</span></div>
+      <div class="row"><span class="row-label">Sentry mode</span><span class="row-val">${vs.sentry_mode?'Enabled':'Disabled'}</span></div>
+      <div class="row"><span class="row-label">Speed</span><span class="row-val">${ds.speed?ds.speed+' mph':'Parked'}</span></div>
+      <div class="row"><span class="row-label">Location</span><span class="row-val"><a href="https://maps.google.com/?q=${ds.latitude},${ds.longitude}" target="_blank" style="color:var(--blue);">View on map</a></span></div>
+    `;
+  } catch(e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
+}
+
+async function pollVehicle() {
+  document.getElementById('lastPollTime').textContent = new Date().toLocaleTimeString();
+  try {
+    const r = await api(`/vehicles/${S.vehicleId}/vehicle_data?endpoints=vehicle_state%3Bcharge_state`);
+    if (!r.ok) { await fireAlert('error','Poll error','Could not reach vehicle — may be asleep','warn'); return; }
+    const d = (await r.json()).response;
+    const vs = d.vehicle_state, cs = d.charge_state;
+    const nowSentry = vs.sentry_mode;
+    const locked = vs.locked;
+    const batt = cs.battery_level;
+    if (!locked) await fireAlert('unlock','Vehicle unlocked','Doors are currently unlocked','warn');
+    if (batt < 20) await fireAlert('battery','Low battery',`Battery at ${batt}%`,'warn');
+    if (S.sentryOn && !nowSentry) await fireAlert('sentry_off','Sentry disabled!','Sentry turned off unexpectedly','err');
+    else if (nowSentry) await fireAlert('heartbeat','Sentry heartbeat','Sentry active, vehicle secured','ok');
+    S.sentryOn = nowSentry; S.vehicleOnline = true;
+    document.getElementById('sentryState').textContent = nowSentry ? 'Enabled' : 'Disabled';
+    document.getElementById('sentryStateSub').textContent = locked ? 'Locked' : 'UNLOCKED';
+  } catch(e) { await fireAlert('error','Poll failed',e.message,'warn'); }
+}
+
+async function fireAlert(type, title, desc, severity) {
+  const ts = new Date();
+  S.alerts.unshift({ type, title, desc, severity, time: ts });
+  if (severity === 'err' || severity === 'warn') {
+    S.eventCount++;
+    document.getElementById('eventCount').textContent = S.eventCount;
+    document.getElementById('lastEventTime').textContent = 'Last: ' + ts.toLocaleTimeString();
+    const msg = `[PulseBoard] ${title}: ${desc} at ${ts.toLocaleTimeString()}`;
+    await Promise.all([sendPushover('PulseBoard Alert', msg), sendSMS(msg), sendEmail('PulseBoard: '+title, msg)]);
+  }
+  renderFeed(); renderAlertLog();
+}
+
+function renderFeed() {
+  const el = document.getElementById('feedList');
+  if (!S.alerts.length) { el.innerHTML = '<div class="empty">No events detected.</div>'; return; }
+  el.innerHTML = S.alerts.slice(0,12).map(a => {
+    const ic = a.severity==='err'?'!':a.severity==='warn'?'~':'✓';
+    const cls = a.severity==='err'?'icon-err':a.severity==='warn'?'icon-warn':'icon-ok';
+    return `<div class="alert-item"><div class="alert-icon ${cls}">${ic}</div><div><div class="alert-title">${a.title}</div><div class="alert-desc">${a.desc}</div><div class="alert-time">${a.time.toLocaleTimeString()}</div></div></div>`;
+  }).join('');
+}
+
+function renderAlertLog() {
+  const el = document.getElementById('alertLog');
+  if (!S.alerts.length) { el.innerHTML = '<div class="empty">No alerts yet.</div>'; return; }
+  el.innerHTML = S.alerts.map(a => {
+    const pc = a.severity==='err'?'pill-live':a.severity==='warn'?'pill-warn':'pill-ok';
+    const pt = a.severity==='err'?'Alert':a.severity==='warn'?'Warn':'OK';
+    return `<div class="row"><span class="row-label">${a.time.toLocaleTimeString()} — ${a.title}: ${a.desc}</span><span><span class="pill ${pc}">${pt}</span></span></div>`;
+  }).join('');
+}
+
+function toggleMonitor() {
+  if (S.monitoring) {
+    S.monitoring = false;
+    clearInterval(S.pollTimer); clearInterval(S.countdownTimer);
+    document.getElementById('monitorPill').textContent = 'Monitor off';
+    document.getElementById('monitorPill').className = 'pill pill-off';
+    document.getElementById('monitorToggleBtn').textContent = 'Start monitor';
+    document.getElementById('liveIndicator').style.display = 'none';
+    document.getElementById('nextPoll').textContent = '—';
+    document.getElementById('pollStatus').textContent = 'Stopped';
+  } else {
+    S.monitoring = true;
+    document.getElementById('monitorPill').textContent = 'Live';
+    document.getElementById('monitorPill').className = 'pill pill-live';
+    document.getElementById('monitorToggleBtn').textContent = 'Stop monitor';
+    document.getElementById('liveIndicator').style.display = 'flex';
+    document.getElementById('pollStatus').textContent = 'Active';
+    pollVehicle(); startCountdown();
+    S.pollTimer = setInterval(() => { pollVehicle(); startCountdown(); }, 60000);
+  }
+}
+
+function startCountdown() {
+  S.countdown = 60; clearInterval(S.countdownTimer);
+  S.countdownTimer = setInterval(() => { S.countdown--; document.getElementById('nextPoll').textContent = S.countdown+'s'; if(S.countdown<=0) S.countdown=60; }, 1000);
+}
+
+function pollNow() {
+  if (!S.monitoring) { alert('Start the monitor first.'); return; }
+  clearInterval(S.pollTimer); clearInterval(S.countdownTimer);
+  pollVehicle(); startCountdown();
+  S.pollTimer = setInterval(() => { pollVehicle(); startCountdown(); }, 60000);
+}
+
+async function sendCmd(cmd, val) {
+  const body = val !== undefined ? { on: val === 'on' } : {};
+  try {
+    const r = await api(`/vehicles/${S.vehicleId}/command/${cmd}`, 'POST', body);
+    const d = await r.json();
+    await fireAlert('cmd', cmd.replace(/_/g,' '), d.response?.result ? 'Command sent' : (d.response?.reason||'Sent'), 'ok');
+  } catch(e) { alert('Error: '+e.message); }
+}
+
+async function testAlert() { await fireAlert('test','Test alert','All alert channels active','err'); }
+
+async function sendPushover(title, msg) {
+  if (!S.channels.pushover || !S.cfg.poUser || !S.cfg.poToken) return;
+  try { await fetch('https://api.pushover.net/1/messages.json',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:S.cfg.poToken,user:S.cfg.poUser,title,message:msg,sound:'siren'})}); } catch(e){}
+}
+async function sendSMS(msg) {
+  if (!S.channels.sms || !S.cfg.twSid) return;
+  try { await fetch(`https://api.twilio.com/2010-04-01/Accounts/${S.cfg.twSid}/Messages.json`,{method:'POST',headers:{Authorization:'Basic '+btoa(S.cfg.twSid+':'+S.cfg.twToken),'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({From:S.cfg.twFrom,To:S.cfg.twTo,Body:msg})}); } catch(e){}
+}
+async function sendEmail(subject, body) {
+  if (!S.channels.email || !S.cfg.sgKey) return;
+  try { await fetch('https://api.sendgrid.com/v3/mail/send',{method:'POST',headers:{Authorization:'Bearer '+S.cfg.sgKey,'Content-Type':'application/json'},body:JSON.stringify({personalizations:[{to:[{email:S.cfg.sgTo}]}],from:{email:S.cfg.sgFrom},subject,content:[{type:'text/plain',value:body}]})}); } catch(e){}
+}
+
+function toggleCh(ch, btn) {
+  S.channels[ch] = !S.channels[ch];
+  btn.className = 'toggle ' + (S.channels[ch] ? 'on' : 'off');
+  updateChDetail(ch); saveSession();
+}
+function updateChDetail(ch) {
+  if (ch==='pushover') document.getElementById('pushoverDetail').textContent = S.cfg.poUser?(S.channels.pushover?'Active':'Inactive — toggle to enable'):'Not configured';
+  if (ch==='sms') document.getElementById('smsDetail').textContent = S.cfg.twTo?(S.channels.sms?'Active':'Inactive — toggle to enable'):'Not configured';
+  if (ch==='email') document.getElementById('emailDetail').textContent = S.cfg.sgTo?(S.channels.email?'Active':'Inactive — toggle to enable'):'Not configured';
+}
+function saveCfg() {
+  S.cfg = { poUser: document.getElementById('poUser').value, poToken: document.getElementById('poToken').value, twSid: document.getElementById('twSid').value, twToken: document.getElementById('twToken').value, twFrom: document.getElementById('twFrom').value, twTo: document.getElementById('twTo').value, sgKey: document.getElementById('sgKey').value, sgFrom: document.getElementById('sgFrom').value, sgTo: document.getElementById('sgTo').value };
+  ['pushover','sms','email'].forEach(updateChDetail);
+  saveSession();
+}
+function loadCfgToForm() {
+  const c = S.cfg;
+  if (!c) return;
+  ['poUser','poToken','twSid','twToken','twFrom','twTo','sgKey','sgFrom','sgTo'].forEach(id => { const el=document.getElementById(id); if(el && c[id]) el.value=c[id]; });
+  ['pushover','sms','email'].forEach(ch => {
+    const t = document.getElementById(ch+'Toggle');
+    if(t) t.className = 'toggle ' + (S.channels[ch]?'on':'off');
+    updateChDetail(ch);
+  });
+}
+function disconnect() { localStorage.removeItem('pb_session'); location.reload(); }
+
+if (loadSession() && S.accessToken) { showDash(); }
+</script>
+</body>
+</html>
