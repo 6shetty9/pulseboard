@@ -416,16 +416,17 @@ async function detectVehicle() {
   const vehicles = d.response || [];
   S.vehicles = vehicles;
   if (vehicles.length > 0) {
-    // Default to first vehicle
-    S.vehicleId = vehicles[0].id;
-    S.vehicleName = vehicles[0].display_name || 'My Tesla';
+    // Use id_s (string) to avoid JS integer precision loss on large IDs
+    const v = vehicles[0];
+    S.vehicleId = v.id_s || String(v.id);
+    S.vehicleName = v.display_name || 'My Tesla';
   }
 }
 
 function switchVehicle(id) {
-  const v = S.vehicles.find(v => String(v.id) === String(id));
+  const v = S.vehicles.find(v => (v.id_s || String(v.id)) === String(id));
   if (v) {
-    S.vehicleId = v.id;
+    S.vehicleId = v.id_s || String(v.id);
     S.vehicleName = v.display_name || 'My Tesla';
     saveSession();
     document.getElementById('sessionVehicle').textContent = S.vehicleName;
@@ -437,11 +438,13 @@ function switchVehicle(id) {
 function renderVehiclePicker() {
   const el = document.getElementById('vehiclePicker');
   if (!el || S.vehicles.length <= 1) return;
-  el.innerHTML = S.vehicles.map(v => `
-    <button onclick="switchVehicle('${v.id}')" class="btn" style="${String(v.id)===String(S.vehicleId)?'background:var(--green-bg);border-color:#97C459;color:var(--green-text);':''}">
-      ${String(v.id)===String(S.vehicleId)?'✓ ':''} ${v.display_name || 'Tesla'} &nbsp;<span style="font-size:11px;color:var(--hint);">${v.vin}</span>
-    </button>
-  `).join('');
+  el.innerHTML = S.vehicles.map(v => {
+    const vid = v.id_s || String(v.id);
+    const active = vid === String(S.vehicleId);
+    return `<button onclick="switchVehicle('${vid}')" class="btn" style="${active?'background:var(--green-bg);border-color:#97C459;color:var(--green-text);':''}">
+      ${active?'✓ ':''} ${v.display_name || 'Tesla'} &nbsp;<span style="font-size:11px;color:var(--hint);">${v.vin || ''}</span>
+    </button>`;
+  }).join('');
 }
 
 async function showDash() {
