@@ -11,11 +11,10 @@
     .logo { font-size: 28px; margin-bottom: 1rem; }
     h1 { font-size: 20px; font-weight: 500; color: #111; margin-bottom: 8px; }
     p { font-size: 14px; color: #666; line-height: 1.6; margin-bottom: 1rem; }
-    .code-box { background: #f5f5f5; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 13px; color: #111; word-break: break-all; margin-bottom: 1rem; text-align: left; }
-    .btn { display: inline-block; padding: 10px 24px; background: #E24B4A; color: #fff; border-radius: 8px; font-size: 14px; font-weight: 500; text-decoration: none; cursor: pointer; border: none; }
-    .status { font-size: 13px; color: #639922; margin-top: 8px; }
-    .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #ddd; border-top-color: #E24B4A; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
+    .spinner { display: inline-block; width: 22px; height: 22px; border: 2px solid #ddd; border-top-color: #E24B4A; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 8px; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .success { color: #3B6D11; font-weight: 500; }
+    .error { color: #A32D2D; }
   </style>
 </head>
 <body>
@@ -26,33 +25,23 @@
       <p><span class="spinner"></span> Completing Tesla authorization…</p>
     </div>
   </div>
-
   <script>
     const params = new URLSearchParams(window.location.search);
     const code = params.get('code');
-    const state = params.get('state');
     const error = params.get('error');
-
     const el = document.getElementById('content');
 
     if (error) {
-      el.innerHTML = `<p style="color:#A32D2D;">Authorization failed: ${error}</p><p>Please close this tab and try again.</p>`;
+      el.innerHTML = `<p class="error">Authorization failed: ${error}</p>`;
     } else if (code) {
-      el.innerHTML = `
-        <p>Tesla authorization successful! Copy the code below and paste it into PulseBoard to complete setup.</p>
-        <div class="code-box" id="authCode">${code}</div>
-        <button class="btn" onclick="copyCode()">Copy code</button>
-        <div class="status" id="copyStatus"></div>
-        <p style="margin-top:1rem;font-size:12px;color:#999;">You can close this tab after copying.</p>
-      `;
+      localStorage.setItem('pb_auth_code', code);
+      localStorage.setItem('pb_auth_code_ts', Date.now().toString());
+      el.innerHTML = `<p class="success">✓ Authorized! Returning to PulseBoard…</p>`;
+      setTimeout(() => {
+        window.location.href = 'https://6shetty9.github.io/pulseboard/?code=' + encodeURIComponent(code);
+      }, 800);
     } else {
-      el.innerHTML = `<p>No authorization code found. Please return to PulseBoard and try connecting again.</p>`;
-    }
-
-    function copyCode() {
-      navigator.clipboard.writeText(document.getElementById('authCode').textContent).then(() => {
-        document.getElementById('copyStatus').textContent = 'Copied to clipboard!';
-      });
+      el.innerHTML = `<p>No code found. <a href="https://6shetty9.github.io/pulseboard/">Back to PulseBoard</a></p>`;
     }
   </script>
 </body>
