@@ -578,7 +578,20 @@ function loadCfgToForm() {
 }
 function disconnect() { localStorage.removeItem('pb_session'); location.reload(); }
 
-if (loadSession() && S.accessToken) { showDash(); }
+// Auto-detect auth code returned from callback redirect
+const urlParams = new URLSearchParams(window.location.search);
+const inboundCode = urlParams.get("code");
+if (inboundCode) {
+  window.history.replaceState({}, document.title, window.location.pathname);
+  document.getElementById("authCode").value = inboundCode;
+  const savedCid = localStorage.getItem("pb_client_id");
+  const savedSec = localStorage.getItem("pb_client_secret");
+  if (savedCid) document.getElementById("clientId").value = savedCid;
+  if (savedSec) document.getElementById("clientSecret").value = savedSec;
+  if (savedCid) exchangeCode();
+} else if (loadSession() && S.accessToken) {
+  showDash();
+}
 </script>
 </body>
 </html>
