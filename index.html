@@ -198,6 +198,7 @@
         <div class="card-title">Controls</div>
         <div class="flex-row">
           <button class="btn" onclick="pollNow()">Poll now</button>
+          <button class="btn" style="background:#E6F1FB;color:#185FA5;border-color:#90C0E8;" onclick="wakeVehicle()">⏰ Wake vehicle</button>
           <button class="btn btn-green" onclick="sendCmd('set_sentry_mode','on')">Enable sentry</button>
           <button class="btn" style="background:var(--red-bg);color:var(--red-text);border-color:#F09595;" onclick="sendCmd('set_sentry_mode','off')">Disable sentry</button>
           <button class="btn" onclick="sendCmd('door_lock')">Lock doors</button>
@@ -208,6 +209,10 @@
     </div>
 
     <div id="tab-vehicle" style="display:none;">
+      <div class="card" style="margin-bottom:12px;" id="vehiclePickerCard">
+        <div class="card-title">Your vehicles</div>
+        <div id="vehiclePicker" class="flex-row"></div>
+      </div>
       <div class="card" id="vehicleCard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
     </div>
 
@@ -296,7 +301,7 @@ const TESLA_TOKEN = 'https://long-credit-778c.sudhin-shetty.workers.dev/token';
 const FLEET = 'https://long-credit-778c.sudhin-shetty.workers.dev';
 
 let S = {
-  accessToken: null, refreshToken: null, vehicleId: null, vehicleName: null,
+  accessToken: null, refreshToken: null, vehicleId: null, vehicleName: null, vehicles: [],
   monitoring: false, pollTimer: null, countdownTimer: null, countdown: 60,
   eventCount: 0, sentryOn: false, vehicleOnline: false, alerts: [],
   channels: { pushover: false, sms: false, email: false },
@@ -347,13 +352,24 @@ async function exchangeCode() {
   if (!code || !cid) { alert('Missing code or Client ID.'); return; }
   document.getElementById('authStatus').innerHTML = '<span class="spinner"></span> Exchanging code…';
   try {
+    const params = new URLSearchParams({ grant_type: 'authorization_code', client_id: cid, client_secret: csec, code, redirect_uri: REDIRECT, code_verifier: verifier });
+    console.log('TOKEN REQUEST:', {
+      url: TESLA_TOKEN,
+      client_id: cid,
+      code: code.substring(0,20) + '...',
+      redirect_uri: REDIRECT,
+      has_verifier: !!verifier,
+      verifier_length: verifier ? verifier.length : 0
+    });
     const r = await fetch(TESLA_TOKEN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: cid, client_secret: csec, code, redirect_uri: REDIRECT, code_verifier: verifier })
+      body: params
     });
-    const d = await r.json();
-    if (!d.access_token) throw new Error(d.error_description || 'Token exchange failed');
+    const rawText = await r.text();
+    console.log('TOKEN RESPONSE status:', r.status, 'body:', rawText);
+    const d = JSON.parse(rawText);
+    if (!d.access_token) throw new Error(d.error_description || d.error || JSON.stringify(d));
     S.accessToken = d.access_token;
     S.refreshToken = d.refresh_token;
     await detectVehicle();
@@ -397,8 +413,35 @@ async function api(path, method='GET', body=null) {
 async function detectVehicle() {
   const r = await api('/vehicles');
   const d = await r.json();
-  const v = d.response && d.response[0];
-  if (v) { S.vehicleId = v.id; S.vehicleName = v.display_name || 'My Tesla'; }
+  const vehicles = d.response || [];
+  S.vehicles = vehicles;
+  if (vehicles.length > 0) {
+    // Default to first vehicle
+    S.vehicleId = vehicles[0].id;
+    S.vehicleName = vehicles[0].display_name || 'My Tesla';
+  }
+}
+
+function switchVehicle(id) {
+  const v = S.vehicles.find(v => String(v.id) === String(id));
+  if (v) {
+    S.vehicleId = v.id;
+    S.vehicleName = v.display_name || 'My Tesla';
+    saveSession();
+    document.getElementById('sessionVehicle').textContent = S.vehicleName;
+    renderVehiclePicker();
+    loadVehicleCard();
+  }
+}
+
+function renderVehiclePicker() {
+  const el = document.getElementById('vehiclePicker');
+  if (!el || S.vehicles.length <= 1) return;
+  el.innerHTML = S.vehicles.map(v => `
+    <button onclick="switchVehicle('${v.id}')" class="btn" style="${String(v.id)===String(S.vehicleId)?'background:var(--green-bg);border-color:#97C459;color:var(--green-text);':''}">
+      ${String(v.id)===String(S.vehicleId)?'✓ ':''} ${v.display_name || 'Tesla'} &nbsp;<span style="font-size:11px;color:var(--hint);">${v.vin}</span>
+    </button>
+  `).join('');
 }
 
 function showDash() {
@@ -406,6 +449,7 @@ function showDash() {
   document.getElementById('dashView').style.display = 'block';
   document.getElementById('sessionVehicle').textContent = S.vehicleName || 'Tesla';
   loadCfgToForm();
+  renderVehiclePicker();
   loadVehicleCard();
 }
 
@@ -435,6 +479,7 @@ async function loadVehicleCard() {
         <div>
           <div class="v-name">${S.vehicleName}</div>
           <div class="v-sub"><span class="${d.state==='online'?'dot-online':'dot-offline'}"></span>${d.state} · ${vs.locked?'Locked':'Unlocked'}</div>
+          <div class="v-sub" style="margin-top:2px;">VIN: ${d.vin || '—'}</div>
         </div>
       </div>
       <div class="card-title">Battery</div>
@@ -532,6 +577,37 @@ function toggleMonitor() {
 function startCountdown() {
   S.countdown = 60; clearInterval(S.countdownTimer);
   S.countdownTimer = setInterval(() => { S.countdown--; document.getElementById('nextPoll').textContent = S.countdown+'s'; if(S.countdown<=0) S.countdown=60; }, 1000);
+}
+
+async function wakeVehicle() {
+  if (!S.vehicleId || !S.accessToken) { alert('Not connected.'); return; }
+  await fireAlert('wake', 'Waking vehicle', 'Sending wake command — may take up to 30 seconds…', 'ok');
+  try {
+    await api(`/vehicles/${S.vehicleId}/wake_up`, 'POST');
+    // Poll every 5 seconds for up to 30 seconds waiting for vehicle to wake
+    let attempts = 0;
+    const waitForWake = setInterval(async () => {
+      attempts++;
+      try {
+        const r = await api(`/vehicles/${S.vehicleId}/vehicle_data?endpoints=vehicle_state%3Bcharge_state`);
+        if (r.ok) {
+          clearInterval(waitForWake);
+          await fireAlert('wake', 'Vehicle awake!', 'Successfully connected to vehicle', 'ok');
+          pollVehicle();
+        } else if (attempts >= 6) {
+          clearInterval(waitForWake);
+          await fireAlert('wake', 'Wake timed out', 'Vehicle did not respond — try again or open the Tesla app', 'warn');
+        }
+      } catch(e) {
+        if (attempts >= 6) {
+          clearInterval(waitForWake);
+          await fireAlert('wake', 'Wake timed out', 'Vehicle did not respond', 'warn');
+        }
+      }
+    }, 5000);
+  } catch(e) {
+    await fireAlert('wake', 'Wake failed', e.message, 'warn');
+  }
 }
 
 function pollNow() {
