@@ -251,6 +251,7 @@ const REDIRECT = 'https://6shetty9.github.io/pulseboard/callback';
 const SCOPES = 'openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds vehicle_location';
 const TESLA_AUTH = 'https://auth.tesla.com/oauth2/v3/authorize';
 const PROXY = 'https://long-credit-778c.sudhin-shetty.workers.dev';
+const API = PROXY + '/api/1';
 
 let S = {
   token: null, refresh: null, vehicleId: null, vehicleName: null, vehicles: [],
@@ -280,11 +281,11 @@ function load() {
 async function api(path, method='GET', body=null) {
   const opts = { method, headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-  let r = await fetch(PROXY + path, opts);
+  let r = await fetch(API + path, opts);
   if (r.status === 401) {
     if (await doRefresh()) {
       opts.headers.Authorization = 'Bearer ' + S.token;
-      r = await fetch(PROXY + path, opts);
+      r = await fetch(API + path, opts);
     }
   }
   return r;
