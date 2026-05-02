@@ -660,3 +660,25 @@ function disconnect() {
 // ── Boot ─────────────────────────────────────────────────
 // Restore notification settings if they were preserved across sign out
 const savedNotify = localStorage.getItem('pb_notify');
+if (savedNotify) {
+  try {
+    const n = JSON.parse(savedNotify);
+    if (n.cfg) S.cfg = n.cfg;
+    if (n.channels) S.channels = n.channels;
+  } catch(e) {}
+}
+
+const storedCode = localStorage.getItem('pb_auth_code');
+const storedTs = parseInt(localStorage.getItem('pb_auth_code_ts') || '0');
+if (storedCode && Date.now() - storedTs < 30000) {
+  localStorage.removeItem('pb_auth_code');
+  localStorage.removeItem('pb_auth_code_ts');
+  document.getElementById('authCode').value = storedCode;
+  const cid = localStorage.getItem('pb_cid');
+  if (cid) { document.getElementById('clientId').value = cid; exchangeCode(); }
+} else if (load()) {
+  showDash();
+}
+</script>
+</body>
+</html>
