@@ -273,7 +273,15 @@ function save() {
 function load() {
   try {
     const d = JSON.parse(localStorage.getItem('pb2') || 'null');
-    if (d && d.token) { Object.assign(S, d); return true; }
+    if (d && d.token) {
+      Object.assign(S, d);
+      // Auto-populate vehicleVin from vehicles array if missing
+      if (!S.vehicleVin && S.vehicleId && S.vehicles.length > 0) {
+        const v = S.vehicles.find(v => v.id === S.vehicleId);
+        if (v) S.vehicleVin = v.vin;
+      }
+      return true;
+    }
   } catch(e) {}
   return false;
 }
