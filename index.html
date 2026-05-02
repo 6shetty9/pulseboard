@@ -255,7 +255,7 @@ const API = PROXY + '/api/1';
 const LOCAL_PROXY = 'https://localhost:8080/api/1'; // CORS proxy → tesla-http-proxy
 
 let S = {
-  token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [],
+  token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [], vehicleWasAsleep: false,
   monitoring: false, pollTimer: null, countdownTimer: null, countdown: 60,
   eventCount: 0, sentryOn: false, alerts: [],
   channels: { pushover: false, sms: false, email: false }, cfg: {}
@@ -485,14 +485,28 @@ async function pollVehicle() {
   if (!S.vehicleId) return;
   try {
     const r = await api(`/vehicles/${S.vehicleId}/vehicle_data?endpoints=vehicle_state%3Bcharge_state`);
-    if (!r.ok) { await fireAlert('error','Poll error','Could not reach vehicle — may be asleep','warn'); return; }
+    if (!r.ok) { 
+      S.vehicleWasAsleep = true; // track that vehicle was asleep
+      await fireAlert('error','Poll error','Could not reach vehicle — may be asleep','warn'); return; 
+    }
     const d = (await r.json()).response;
     const vs = d.vehicle_state, cs = d.charge_state;
     if (!vs.locked) await fireAlert('unlock','Vehicle unlocked','Doors are currently unlocked','warn');
     if (cs.battery_level < 20) await fireAlert('battery','Low battery',`Battery at ${cs.battery_level}%`,'warn');
     if (S.sentryOn && !vs.sentry_mode) await fireAlert('sentry_off','⚠ Sentry disabled!','Sentry turned off unexpectedly','err');
-    else if (vs.sentry_mode) await fireAlert('heartbeat','Sentry heartbeat','Sentry active, vehicle secured','ok');
+    else if (vs.sentry_mode) {
+      // Detect sentry camera event: vehicle woke up while parked with sentry on
+      // Tesla wakes the car when sentry detects a significant threat
+      const wasAsleep = S.vehicleWasAsleep;
+      const isParked = !d.drive_state?.shift_state || d.drive_state?.shift_state === 'P';
+      if (wasAsleep && isParked && vs.sentry_mode) {
+        await fireAlert('camera','⚠ Sentry event detected!','Vehicle woke up while parked — possible security threat','err');
+      } else {
+        await fireAlert('heartbeat','Sentry heartbeat','Sentry active, vehicle secured','ok');
+      }
+    }
     S.sentryOn = vs.sentry_mode;
+    S.vehicleWasAsleep = false; // vehicle is awake now
     document.getElementById('sentryState').textContent = vs.sentry_mode ? 'Enabled' : 'Disabled';
     document.getElementById('sentryStateSub').textContent = vs.locked ? 'Locked' : 'UNLOCKED';
   } catch(e) { await fireAlert('error','Poll failed',e.message,'warn'); }
@@ -549,6 +563,14 @@ function pollNow() {
 
 async function sendCmd(cmd, val) {
   if (!S.vehicleVin) return;
+  // Commands require local proxy — warn if on mobile/remote
+  const isLocalhost = window.location.hostname === 'localhost' || 
+    ['127.0.0.1','::1'].includes(window.location.hostname);
+  const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
+  if (isMobile) {
+    alert('Commands require the PulseBoard proxy running on your Mac. Use your desktop to send commands, or monitor only on mobile.');
+    return;
+  }
   const body = val !== undefined ? { on: val === 'on' } : {};
   try {
     const r = await cmdApi(`/vehicles/${S.vehicleVin}/command/${cmd}`, 'POST', body);
@@ -638,25 +660,3 @@ function disconnect() {
 // ── Boot ─────────────────────────────────────────────────
 // Restore notification settings if they were preserved across sign out
 const savedNotify = localStorage.getItem('pb_notify');
-if (savedNotify) {
-  try {
-    const n = JSON.parse(savedNotify);
-    if (n.cfg) S.cfg = n.cfg;
-    if (n.channels) S.channels = n.channels;
-  } catch(e) {}
-}
-
-const storedCode = localStorage.getItem('pb_auth_code');
-const storedTs = parseInt(localStorage.getItem('pb_auth_code_ts') || '0');
-if (storedCode && Date.now() - storedTs < 30000) {
-  localStorage.removeItem('pb_auth_code');
-  localStorage.removeItem('pb_auth_code_ts');
-  document.getElementById('authCode').value = storedCode;
-  const cid = localStorage.getItem('pb_cid');
-  if (cid) { document.getElementById('clientId').value = cid; exchangeCode(); }
-} else if (load()) {
-  showDash();
-}
-</script>
-</body>
-</html>
