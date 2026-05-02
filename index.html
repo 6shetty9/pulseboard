@@ -255,7 +255,7 @@ const API = PROXY + '/api/1';
 const LOCAL_PROXY = 'https://localhost:8080/api/1'; // CORS proxy → tesla-http-proxy
 
 let S = {
-  token: null, refresh: null, vehicleId: null, vehicleName: null, vehicles: [],
+  token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [],
   monitoring: false, pollTimer: null, countdownTimer: null, countdown: 60,
   eventCount: 0, sentryOn: false, alerts: [],
   channels: { pushover: false, sms: false, email: false }, cfg: {}
@@ -265,7 +265,7 @@ let S = {
 function save() {
   localStorage.setItem('pb2', JSON.stringify({
     token: S.token, refresh: S.refresh,
-    vehicleId: S.vehicleId, vehicleName: S.vehicleName,
+    vehicleId: S.vehicleId, vehicleVin: S.vehicleVin, vehicleName: S.vehicleName,
     vehicles: S.vehicles, channels: S.channels, cfg: S.cfg
   }));
 }
@@ -378,6 +378,7 @@ async function fetchVehicles() {
   }));
   if (S.vehicles.length > 0 && !S.vehicleId) {
     S.vehicleId = S.vehicles[0].id;
+    S.vehicleVin = S.vehicles[0].vin;
     S.vehicleName = S.vehicles[0].name;
   }
 }
@@ -493,7 +494,7 @@ async function wakeVehicle() {
   if (!S.vehicleId) return;
   await fireAlert('wake','Waking vehicle','Sending wake command…','ok');
   try {
-    await cmdApi(`/vehicles/${S.vehicleId}/wake_up`, 'POST');
+    await cmdApi(`/vehicles/${S.vehicleVin || S.vehicleId}/wake_up`, 'POST');
     let tries = 0;
     const t = setInterval(async () => {
       tries++;
@@ -539,10 +540,10 @@ function pollNow() {
 }
 
 async function sendCmd(cmd, val) {
-  if (!S.vehicleId) return;
+  if (!S.vehicleVin) return;
   const body = val !== undefined ? { on: val === 'on' } : {};
   try {
-    const r = await cmdApi(`/vehicles/${S.vehicleId}/command/${cmd}`, 'POST', body);
+    const r = await cmdApi(`/vehicles/${S.vehicleVin}/command/${cmd}`, 'POST', body);
     const d = await r.json();
     await fireAlert('cmd', cmd.replace(/_/g,' '), d.response?.result ? 'Command sent successfully' : (d.response?.reason||'Sent'), 'ok');
   } catch(e) { alert('Error: '+e.message); }
