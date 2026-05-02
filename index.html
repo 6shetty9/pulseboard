@@ -608,9 +608,26 @@ function loadCfgToForm() {
   ['poUser','poToken','twSid','twToken','twFrom','twTo','sgKey','sgFrom','sgTo'].forEach(id => { const el=document.getElementById(id); if(el&&c[id]) el.value=c[id]; });
   ['pushover','sms','email'].forEach(ch => { const t=document.getElementById(ch+'Toggle'); if(t) t.className='toggle '+(S.channels[ch]?'on':'off'); updateChDetail(ch); });
 }
-function disconnect() { localStorage.clear(); location.reload(); }
+function disconnect() {
+  // Preserve notification settings across sign out
+  const savedCfg = S.cfg;
+  const savedChannels = S.channels;
+  localStorage.clear();
+  localStorage.setItem('pb_notify', JSON.stringify({ cfg: savedCfg, channels: savedChannels }));
+  location.reload();
+}
 
 // ── Boot ─────────────────────────────────────────────────
+// Restore notification settings if they were preserved across sign out
+const savedNotify = localStorage.getItem('pb_notify');
+if (savedNotify) {
+  try {
+    const n = JSON.parse(savedNotify);
+    if (n.cfg) S.cfg = n.cfg;
+    if (n.channels) S.channels = n.channels;
+  } catch(e) {}
+}
+
 const storedCode = localStorage.getItem('pb_auth_code');
 const storedTs = parseInt(localStorage.getItem('pb_auth_code_ts') || '0');
 if (storedCode && Date.now() - storedTs < 30000) {
