@@ -252,6 +252,7 @@ const SCOPES = 'openid offline_access vehicle_device_data vehicle_cmds vehicle_c
 const TESLA_AUTH = 'https://auth.tesla.com/oauth2/v3/authorize';
 const PROXY = 'https://long-credit-778c.sudhin-shetty.workers.dev';
 const API = PROXY + '/api/1';
+const LOCAL_PROXY = 'https://localhost:4443/api/1'; // for signed commands
 
 let S = {
   token: null, refresh: null, vehicleId: null, vehicleName: null, vehicles: [],
@@ -278,6 +279,14 @@ function load() {
 }
 
 // ── API ──────────────────────────────────────────────────
+async function cmdApi(path, method='POST', body=null) {
+  // Commands must go through local proxy for private key signing
+  const opts = { method, headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(LOCAL_PROXY + path, opts);
+  return r;
+}
+
 async function api(path, method='GET', body=null) {
   const opts = { method, headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
@@ -484,7 +493,7 @@ async function wakeVehicle() {
   if (!S.vehicleId) return;
   await fireAlert('wake','Waking vehicle','Sending wake command…','ok');
   try {
-    await api(`/vehicles/${S.vehicleId}/wake_up`, 'POST');
+    await cmdApi(`/vehicles/${S.vehicleId}/wake_up`, 'POST');
     let tries = 0;
     const t = setInterval(async () => {
       tries++;
@@ -533,7 +542,7 @@ async function sendCmd(cmd, val) {
   if (!S.vehicleId) return;
   const body = val !== undefined ? { on: val === 'on' } : {};
   try {
-    const r = await api(`/vehicles/${S.vehicleId}/command/${cmd}`, 'POST', body);
+    const r = await cmdApi(`/vehicles/${S.vehicleId}/command/${cmd}`, 'POST', body);
     const d = await r.json();
     await fireAlert('cmd', cmd.replace(/_/g,' '), d.response?.result ? 'Command sent successfully' : (d.response?.reason||'Sent'), 'ok');
   } catch(e) { alert('Error: '+e.message); }
