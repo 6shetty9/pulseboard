@@ -431,6 +431,7 @@ function switchVehicle(id) {
   const v = S.vehicles.find(v => v.id === id);
   if (!v) return;
   S.vehicleId = v.id;
+  S.vehicleVin = v.vin;
   S.vehicleName = v.name;
   save();
   renderPicker();
