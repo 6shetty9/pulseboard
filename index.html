@@ -302,7 +302,8 @@ function load() {
 // ── API ──────────────────────────────────────────────────
 async function cmdApi(path, method='POST', body=null) {
   // Commands must go through local proxy for private key signing
-  const opts = { method, headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/json' } };
+  const secret = localStorage.getItem('pb_proxy_secret') || '';
+  const opts = { method, headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/json', 'X-Pulseboard-Secret': secret } };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(LOCAL_PROXY + path, opts);
   return r;
