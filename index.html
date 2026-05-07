@@ -92,7 +92,14 @@
     .v-vin { font-size: 11px; color: var(--hint); margin-top: 2px; font-family: monospace; }
     .v-status { font-size: 11px; color: var(--muted); margin-top: 2px; }
     @media(max-width:600px){ .grid4{grid-template-columns:1fr 1fr;} }
-  </style>
+  
+.switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #ccc; transition: .3s; border-radius: 24px; }
+.slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; transition: .3s; border-radius: 50%; }
+input:checked + .slider { background: var(--red); }
+input:checked + .slider:before { transform: translateX(20px); }
+</style>
 </head>
 <body>
 <div class="topbar">
@@ -237,6 +244,12 @@
         <div class="card-title">Alert thresholds</div>
         <div class="row"><span class="row-label">Sentry turns off unexpectedly</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
         <div class="row"><span class="row-label">Sentry camera event</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
+        <div class="row">
+          <span class="row-label">💨 Fart on sentry event</span>
+          <span class="row-val">
+            <label class="switch"><input type="checkbox" id="fartToggle" onchange="toggleFart(this.checked)"><span class="slider"></span></label>
+          </span>
+        </div>
         <div class="row"><span class="row-label">Vehicle goes offline</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
         <div class="row"><span class="row-label">Battery below 20%</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
         <div class="row"><span class="row-label">Vehicle unlocked</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
@@ -255,7 +268,7 @@ const API = PROXY + '/api/1';
 const LOCAL_PROXY = 'https://67.205.159.24:8080/api/1'; // DigitalOcean CORS proxy → tesla-http-proxy
 
 let S = {
-  token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [], vehicleWasAsleep: false,
+  token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [], vehicleWasAsleep: false, fartOnSentry: true,
   monitoring: false, pollTimer: null, countdownTimer: null, countdown: 60,
   eventCount: 0, sentryOn: false, alerts: [],
   channels: { pushover: false, sms: false, email: false }, cfg: {}
@@ -502,6 +515,13 @@ async function pollVehicle() {
       const isParked = !d.drive_state?.shift_state || d.drive_state?.shift_state === 'P';
       if (wasAsleep && isParked && vs.sentry_mode) {
         await fireAlert('camera','⚠ Sentry event detected!','Vehicle woke up while parked — possible security threat','err');
+        // 💨 Deploy fart as intruder deterrent
+        if (S.fartOnSentry) {
+          try {
+            await cmdApi(`/vehicles/${S.vehicleVin}/command/remote_boombox`, 'POST', { sound: 0 });
+            await fireAlert('fart','💨 Fart deployed!','Boombox fart triggered for sentry event','warn');
+          } catch(e) { console.log('Fart deployment failed:', e); }
+        }
       } else {
         await fireAlert('heartbeat','Sentry heartbeat','Sentry active, vehicle secured','ok');
       }
@@ -649,6 +669,11 @@ function loadCfgToForm() {
   ['poUser','poToken','twSid','twToken','twFrom','twTo','sgKey','sgFrom','sgTo'].forEach(id => { const el=document.getElementById(id); if(el&&c[id]) el.value=c[id]; });
   ['pushover','sms','email'].forEach(ch => { const t=document.getElementById(ch+'Toggle'); if(t) t.className='toggle '+(S.channels[ch]?'on':'off'); updateChDetail(ch); });
 }
+function toggleFart(on) {
+  S.fartOnSentry = on;
+  save();
+}
+
 function disconnect() {
   // Preserve notification settings across sign out
   const savedCfg = S.cfg;
@@ -658,28 +683,3 @@ function disconnect() {
   location.reload();
 }
 
-// ── Boot ─────────────────────────────────────────────────
-// Restore notification settings if they were preserved across sign out
-const savedNotify = localStorage.getItem('pb_notify');
-if (savedNotify) {
-  try {
-    const n = JSON.parse(savedNotify);
-    if (n.cfg) S.cfg = n.cfg;
-    if (n.channels) S.channels = n.channels;
-  } catch(e) {}
-}
-
-const storedCode = localStorage.getItem('pb_auth_code');
-const storedTs = parseInt(localStorage.getItem('pb_auth_code_ts') || '0');
-if (storedCode && Date.now() - storedTs < 30000) {
-  localStorage.removeItem('pb_auth_code');
-  localStorage.removeItem('pb_auth_code_ts');
-  document.getElementById('authCode').value = storedCode;
-  const cid = localStorage.getItem('pb_cid');
-  if (cid) { document.getElementById('clientId').value = cid; exchangeCode(); }
-} else if (load()) {
-  showDash();
-}
-</script>
-</body>
-</html>
