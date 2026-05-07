@@ -676,11 +676,13 @@ function toggleFart(on) {
 }
 
 function disconnect() {
-  // Preserve notification settings across sign out
+  // Preserve notification settings and proxy secret across sign out
   const savedCfg = S.cfg;
   const savedChannels = S.channels;
+  const savedSecret = localStorage.getItem('pb_proxy_secret');
   localStorage.clear();
   localStorage.setItem('pb_notify', JSON.stringify({ cfg: savedCfg, channels: savedChannels }));
+  if (savedSecret) localStorage.setItem('pb_proxy_secret', savedSecret);
   location.reload();
 }
 
