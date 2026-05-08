@@ -323,7 +323,7 @@ async function cmdApi(path, method='POST', body=null) {
 
 // ── Real-time telemetry via WebSocket ─────────────────────
 let pbWs = null;
-let pbLiveState = {};
+let pbLiveStateByVin = {};
 
 function connectTelemetry() {
   const secret = localStorage.getItem('pb_proxy_secret');
@@ -335,7 +335,11 @@ function connectTelemetry() {
   
   pbWs.onopen = () => {
     console.log('[telemetry] connected');
-    document.getElementById('liveStatus')?.classList.add('live-on');
+    const el = document.getElementById('liveStatus');
+    if (el) {
+      el.classList.add('live-on');
+      el.textContent = 'live';
+    }
   };
   
   pbWs.onmessage = (e) => {
@@ -349,22 +353,28 @@ function connectTelemetry() {
   
   pbWs.onclose = (e) => {
     console.log('[telemetry] closed', e.code);
-    document.getElementById('liveStatus')?.classList.remove('live-on');
+    const el = document.getElementById('liveStatus');
+    if (el) {
+      el.classList.remove('live-on');
+      el.textContent = 'reconnecting…';
+    }
     setTimeout(connectTelemetry, 5000);
   };
 }
 
 async function handleTelemetryEvent(evt) {
-  if (evt.topic === 'pulseboard_V' && evt.fields) {
-    Object.assign(pbLiveState, evt.fields);
+  if (evt.topic === 'pulseboard_V' && evt.fields && evt.vin) {
+    if (!pbLiveStateByVin[evt.vin]) pbLiveStateByVin[evt.vin] = {};
+    Object.assign(pbLiveStateByVin[evt.vin], evt.fields);
     updateLiveDisplay();
     
-    // Real-time sentry detection
-    if ('SentryMode' in evt.fields) {
+    // Real-time sentry detection (only for currently selected vehicle)
+    if (evt.vin === S.vehicleVin && 'SentryMode' in evt.fields) {
       const sentryActive = evt.fields.SentryMode === 'SentryModeStateAware' || evt.fields.SentryMode === 'SentryModeStateOn';
-      if (sentryActive && S.fartOnSentry && !pbLiveState._fartCooldown) {
-        pbLiveState._fartCooldown = true;
-        setTimeout(() => { pbLiveState._fartCooldown = false; }, 60000);
+      const state = pbLiveStateByVin[evt.vin];
+      if (sentryActive && S.fartOnSentry && !state._fartCooldown) {
+        state._fartCooldown = true;
+        setTimeout(() => { state._fartCooldown = false; }, 60000);
         try {
           await cmdApi(`/vehicles/${S.vehicleVin}/command/remote_boombox`, 'POST', { sound: 0 });
           await fireAlert('fart','💨 Fart deployed!','Real-time sentry trigger via telemetry','warn');
@@ -377,16 +387,21 @@ async function handleTelemetryEvent(evt) {
 function updateLiveDisplay() {
   const el = document.getElementById('liveData');
   if (!el) return;
+  const state = pbLiveStateByVin[S.vehicleVin];
+  if (!state) {
+    el.innerHTML = '<div style="color: var(--text-soft); font-size: 13px;">Waiting for live data from this vehicle...</div>';
+    return;
+  }
   const fields = ['Soc','BatteryLevel','EstBatteryRange','InsideTemp','OutsideTemp','Locked','SentryMode','Gear','VehicleSpeed','ChargeState'];
   let html = '';
   for (const f of fields) {
-    if (f in pbLiveState) {
-      let val = pbLiveState[f];
+    if (f in state) {
+      let val = state[f];
       if (typeof val === 'number') val = val.toFixed(1);
       html += `<div class="row"><span class="row-label">${f}</span><span class="row-val">${val}</span></div>`;
     }
   }
-  el.innerHTML = html || '<div style="color: var(--text-soft); font-size: 13px;">Waiting for live data...</div>';
+  el.innerHTML = html || '<div style="color: var(--text-soft); font-size: 13px;">Waiting for live data from this vehicle...</div>';
 }
 
 async function api(path, method='GET', body=null) {
@@ -530,6 +545,7 @@ function switchVehicle(id) {
   save();
   renderPicker();
   loadVehicleCard();
+  updateLiveDisplay();
 }
 
 async function loadVehicleCard() {
