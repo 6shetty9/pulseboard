@@ -99,6 +99,11 @@
 .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; transition: .3s; border-radius: 50%; }
 input:checked + .slider { background: var(--red); }
 input:checked + .slider:before { transform: translateX(20px); }
+
+.pill-off { background: rgba(150,150,150,0.2); color: #888; }
+.live-on { background: rgba(34,197,94,0.2) !important; color: #16a34a !important; }
+.live-on::before { content: "●"; margin-right: 4px; animation: pulse-dot 1.5s ease-in-out infinite; }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 </style>
 </head>
 <body>
@@ -187,6 +192,13 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div id="vehiclePicker"></div>
       </div>
       <div class="card" id="vehicleCard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      <div class="card">
+        <div class="card-title">
+          Live telemetry
+          <span id="liveStatus" class="pill pill-off" style="margin-left: 8px; font-size: 11px;">offline</span>
+        </div>
+        <div id="liveData"><div style="color: var(--text-soft); font-size: 13px;">Waiting for live data...</div></div>
+      </div>
     </div>
 
     <div id="tab-alerts" style="display:none;">
@@ -307,6 +319,74 @@ async function cmdApi(path, method='POST', body=null) {
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(LOCAL_PROXY + path, opts);
   return r;
+}
+
+// ── Real-time telemetry via WebSocket ─────────────────────
+let pbWs = null;
+let pbLiveState = {};
+
+function connectTelemetry() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  
+  if (pbWs && (pbWs.readyState === WebSocket.OPEN || pbWs.readyState === WebSocket.CONNECTING)) return;
+  
+  pbWs = new WebSocket(`wss://telemetry.6shetty9.com:8444/ws?secret=${secret}`);
+  
+  pbWs.onopen = () => {
+    console.log('[telemetry] connected');
+    document.getElementById('liveStatus')?.classList.add('live-on');
+  };
+  
+  pbWs.onmessage = (e) => {
+    try {
+      const evt = JSON.parse(e.data);
+      handleTelemetryEvent(evt);
+    } catch (err) { console.log('[telemetry] parse error:', err); }
+  };
+  
+  pbWs.onerror = () => console.log('[telemetry] error');
+  
+  pbWs.onclose = (e) => {
+    console.log('[telemetry] closed', e.code);
+    document.getElementById('liveStatus')?.classList.remove('live-on');
+    setTimeout(connectTelemetry, 5000);
+  };
+}
+
+async function handleTelemetryEvent(evt) {
+  if (evt.topic === 'pulseboard_V' && evt.fields) {
+    Object.assign(pbLiveState, evt.fields);
+    updateLiveDisplay();
+    
+    // Real-time sentry detection
+    if ('SentryMode' in evt.fields) {
+      const sentryActive = evt.fields.SentryMode === 'SentryModeStateAware' || evt.fields.SentryMode === 'SentryModeStateOn';
+      if (sentryActive && S.fartOnSentry && !pbLiveState._fartCooldown) {
+        pbLiveState._fartCooldown = true;
+        setTimeout(() => { pbLiveState._fartCooldown = false; }, 60000);
+        try {
+          await cmdApi(`/vehicles/${S.vehicleVin}/command/remote_boombox`, 'POST', { sound: 0 });
+          await fireAlert('fart','💨 Fart deployed!','Real-time sentry trigger via telemetry','warn');
+        } catch(e) { console.log('Fart failed:', e); }
+      }
+    }
+  }
+}
+
+function updateLiveDisplay() {
+  const el = document.getElementById('liveData');
+  if (!el) return;
+  const fields = ['Soc','BatteryLevel','EstBatteryRange','InsideTemp','OutsideTemp','Locked','SentryMode','Gear','VehicleSpeed','ChargeState'];
+  let html = '';
+  for (const f of fields) {
+    if (f in pbLiveState) {
+      let val = pbLiveState[f];
+      if (typeof val === 'number') val = val.toFixed(1);
+      html += `<div class="row"><span class="row-label">${f}</span><span class="row-val">${val}</span></div>`;
+    }
+  }
+  el.innerHTML = html || '<div style="color: var(--text-soft); font-size: 13px;">Waiting for live data...</div>';
 }
 
 async function api(path, method='GET', body=null) {
@@ -637,83 +717,3 @@ function renderAlertLog() {
   }).join('');
 }
 
-// ── Notifications ────────────────────────────────────────
-async function sendPushover(title, msg) {
-  if (!S.channels.pushover || !S.cfg.poUser || !S.cfg.poToken) return;
-  try { await fetch('https://api.pushover.net/1/messages.json',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:S.cfg.poToken,user:S.cfg.poUser,title,message:msg,sound:'siren'})}); } catch(e){}
-}
-async function sendSMS(msg) {
-  if (!S.channels.sms || !S.cfg.twSid) return;
-  try { await fetch(`https://api.twilio.com/2010-04-01/Accounts/${S.cfg.twSid}/Messages.json`,{method:'POST',headers:{Authorization:'Basic '+btoa(S.cfg.twSid+':'+S.cfg.twToken),'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({From:S.cfg.twFrom,To:S.cfg.twTo,Body:msg})}); } catch(e){}
-}
-async function sendEmail(subject, body) {
-  if (!S.channels.email || !S.cfg.sgKey) return;
-  try { await fetch('https://api.sendgrid.com/v3/mail/send',{method:'POST',headers:{Authorization:'Bearer '+S.cfg.sgKey,'Content-Type':'application/json'},body:JSON.stringify({personalizations:[{to:[{email:S.cfg.sgTo}]}],from:{email:S.cfg.sgFrom},subject,content:[{type:'text/plain',value:body}]})}); } catch(e){}
-}
-
-function toggleCh(ch, btn) {
-  S.channels[ch] = !S.channels[ch];
-  btn.className = 'toggle ' + (S.channels[ch] ? 'on' : 'off');
-  updateChDetail(ch); save();
-}
-function updateChDetail(ch) {
-  if (ch==='pushover') document.getElementById('pushoverDetail').textContent = S.cfg.poUser?(S.channels.pushover?'Active':'Inactive'):'Not configured';
-  if (ch==='sms') document.getElementById('smsDetail').textContent = S.cfg.twTo?(S.channels.sms?'Active':'Inactive'):'Not configured';
-  if (ch==='email') document.getElementById('emailDetail').textContent = S.cfg.sgTo?(S.channels.email?'Active':'Inactive'):'Not configured';
-}
-function saveCfg() {
-  S.cfg = { poUser:document.getElementById('poUser').value, poToken:document.getElementById('poToken').value, twSid:document.getElementById('twSid').value, twToken:document.getElementById('twToken').value, twFrom:document.getElementById('twFrom').value, twTo:document.getElementById('twTo').value, sgKey:document.getElementById('sgKey').value, sgFrom:document.getElementById('sgFrom').value, sgTo:document.getElementById('sgTo').value };
-  ['pushover','sms','email'].forEach(updateChDetail); save();
-}
-function loadCfgToForm() {
-  const c = S.cfg; if (!c) return;
-  ['poUser','poToken','twSid','twToken','twFrom','twTo','sgKey','sgFrom','sgTo'].forEach(id => { const el=document.getElementById(id); if(el&&c[id]) el.value=c[id]; });
-  ['pushover','sms','email'].forEach(ch => { const t=document.getElementById(ch+'Toggle'); if(t) t.className='toggle '+(S.channels[ch]?'on':'off'); updateChDetail(ch); });
-}
-function toggleFart(on) {
-  S.fartOnSentry = on;
-  save();
-}
-
-function disconnect() {
-  // Preserve notification settings and proxy secret across sign out
-  const savedCfg = S.cfg;
-  const savedChannels = S.channels;
-  const savedSecret = localStorage.getItem('pb_proxy_secret');
-  localStorage.clear();
-  localStorage.setItem('pb_notify', JSON.stringify({ cfg: savedCfg, channels: savedChannels }));
-  if (savedSecret) localStorage.setItem('pb_proxy_secret', savedSecret);
-  location.reload();
-}
-
-// ── Boot ─────────────────────────────────────────────────
-// Restore notification settings if they were preserved across sign out
-const savedNotify = localStorage.getItem('pb_notify');
-if (savedNotify) {
-  try {
-    const n = JSON.parse(savedNotify);
-    if (n.cfg) S.cfg = n.cfg;
-    if (n.channels) S.channels = n.channels;
-  } catch(e) {}
-}
-
-const storedCode = localStorage.getItem('pb_auth_code');
-const storedTs = parseInt(localStorage.getItem('pb_auth_code_ts') || '0');
-if (storedCode && Date.now() - storedTs < 30000) {
-  localStorage.removeItem('pb_auth_code');
-  localStorage.removeItem('pb_auth_code_ts');
-  document.getElementById('authCode').value = storedCode;
-  const cid = localStorage.getItem('pb_cid');
-  if (cid) { document.getElementById('clientId').value = cid; exchangeCode(); }
-
-// Initialize fart toggle state
-setTimeout(() => {
-  const ft = document.getElementById('fartToggle');
-  if (ft) ft.checked = S.fartOnSentry !== false;
-}, 100);
-} else if (load()) {
-  showDash();
-}
-</script>
-</body>
-</html>
