@@ -177,10 +177,8 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div class="flex-row">
           <button class="btn" onclick="pollNow()">Poll now</button>
           <button class="btn btn-blue" onclick="wakeVehicle()">⏰ Wake vehicle</button>
-          <button class="btn btn-green" onclick="sendCmd('set_sentry_mode','on')">Enable sentry</button>
-          <button class="btn" style="background:var(--red-bg);color:var(--red-text);border-color:#F09595;" onclick="sendCmd('set_sentry_mode','off')">Disable sentry</button>
-          <button class="btn" onclick="sendCmd('door_lock')">Lock doors</button>
-          <button class="btn" onclick="sendCmd('door_unlock')">Unlock doors</button>
+          <button class="btn" id="sentryBtn" onclick="toggleSentry()">Sentry</button>
+          <button class="btn" id="lockBtn" onclick="toggleLock()">Locks</button>
           <button class="btn" onclick="testAlert()">Test alert</button>
         </div>
       </div>
@@ -441,6 +439,7 @@ async function triggerDeterrent(reason) {
 }
 
 function updateLiveDisplay() {
+  updateControlButtons();
   const el = document.getElementById('liveData');
   if (!el) return;
   const state = pbLiveStateByVin[S.vehicleVin];
@@ -675,6 +674,7 @@ async function pollVehicle() {
       }
     }
     S.sentryOn = vs.sentry_mode;
+    updateControlButtons();
     S.vehicleWasAsleep = false; // vehicle is awake now
     document.getElementById('sentryState').textContent = vs.sentry_mode ? 'Enabled' : 'Disabled';
     document.getElementById('sentryStateSub').textContent = vs.locked ? 'Locked' : 'UNLOCKED';
@@ -821,6 +821,48 @@ function setDeterrent(mode) {
   S.deterrentMode = mode;
   S.fartOnSentry = mode !== 'off';
   save();
+}
+
+function toggleSentry() {
+  const newState = S.sentryOn ? 'off' : 'on';
+  sendCmd('set_sentry_mode', newState);
+}
+
+function toggleLock() {
+  // Check current locked state from live telemetry, fallback to UI display
+  const state = pbLiveStateByVin[S.vehicleVin] || {};
+  const isLocked = state.Locked === true;
+  sendCmd(isLocked ? 'door_unlock' : 'door_lock');
+}
+
+function updateControlButtons() {
+  const sentryBtn = document.getElementById('sentryBtn');
+  if (sentryBtn) {
+    if (S.sentryOn) {
+      sentryBtn.textContent = '🛡 Sentry on';
+      sentryBtn.className = 'btn btn-green';
+    } else {
+      sentryBtn.textContent = '🛡 Sentry off';
+      sentryBtn.className = 'btn';
+      sentryBtn.style.background = 'var(--red-bg)';
+      sentryBtn.style.color = 'var(--red-text)';
+      sentryBtn.style.borderColor = '#F09595';
+    }
+  }
+  const lockBtn = document.getElementById('lockBtn');
+  if (lockBtn) {
+    const state = pbLiveStateByVin[S.vehicleVin] || {};
+    const isLocked = state.Locked === true;
+    if (isLocked) {
+      lockBtn.textContent = '🔒 Locked';
+      lockBtn.className = 'btn btn-green';
+      lockBtn.style.cssText = '';
+    } else {
+      lockBtn.textContent = '🔓 Unlocked';
+      lockBtn.className = 'btn';
+      lockBtn.style.cssText = 'background:var(--red-bg);color:var(--red-text);border-color:#F09595;';
+    }
+  }
 }
 
 function disconnect() {
