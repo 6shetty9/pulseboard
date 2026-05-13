@@ -447,7 +447,7 @@ function updateLiveDisplay() {
     el.innerHTML = '<div style="color: var(--text-soft); font-size: 13px;">Waiting for live data from this vehicle...</div>';
     return;
   }
-  const fields = ['Soc','BatteryLevel','EstBatteryRange','InsideTemp','OutsideTemp','Locked','SentryMode','Gear','VehicleSpeed','ChargeState'];
+  const fields = ['Soc','BatteryLevel','EstBatteryRange','InsideTemp','OutsideTemp','Locked','SentryMode','Gear','VehicleSpeed','ChargeState','TpmsPressureFl','TpmsPressureFr','TpmsPressureRl','TpmsPressureRr'];
   let html = '';
   for (const f of fields) {
     if (f in state) {
