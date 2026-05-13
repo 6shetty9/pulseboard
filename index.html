@@ -438,6 +438,34 @@ async function triggerDeterrent(reason) {
   } catch(e) { console.log('Deterrent failed:', e); }
 }
 
+const FIELD_LABELS = {
+  Soc: 'State of charge',
+  BatteryLevel: 'Battery level',
+  EstBatteryRange: 'Est. range (mi)',
+  InsideTemp: 'Inside temp (°F)',
+  OutsideTemp: 'Outside temp (°F)',
+  Locked: 'Locked',
+  SentryMode: 'Sentry mode',
+  Gear: 'Gear',
+  VehicleSpeed: 'Speed (mph)',
+  ChargeState: 'Charge state',
+  TpmsPressureFl: 'Tire pressure front left (psi)',
+  TpmsPressureFr: 'Tire pressure front right (psi)',
+  TpmsPressureRl: 'Tire pressure rear left (psi)',
+  TpmsPressureRr: 'Tire pressure rear right (psi)'
+};
+
+function formatFieldValue(name, val) {
+  if (val === null || val === undefined) return '—';
+  if (name === 'SentryMode' && typeof val === 'string') return val.replace('SentryModeState', '') || 'Off';
+  if (name === 'Gear' && typeof val === 'string') return val.replace('ShiftState', '') || '—';
+  if (name === 'Locked') return val === true ? 'Yes' : 'No';
+  if ((name === 'InsideTemp' || name === 'OutsideTemp') && typeof val === 'number') return ((val * 9/5) + 32).toFixed(1);
+  if (name.startsWith('TpmsPressure') && typeof val === 'number') return (val * 14.5038).toFixed(1);
+  if (typeof val === 'number') return val.toFixed(1);
+  return String(val);
+}
+
 function updateLiveDisplay() {
   updateControlButtons();
   const el = document.getElementById('liveData');
@@ -451,9 +479,9 @@ function updateLiveDisplay() {
   let html = '';
   for (const f of fields) {
     if (f in state) {
-      let val = state[f];
-      if (typeof val === 'number') val = val.toFixed(1);
-      html += `<div class="row"><span class="row-label">${f}</span><span class="row-val">${val}</span></div>`;
+      const label = FIELD_LABELS[f] || f;
+      const val = formatFieldValue(f, state[f]);
+      html += `<div class="row"><span class="row-label">${label}</span><span class="row-val">${val}</span></div>`;
     }
   }
   el.innerHTML = html || '<div style="color: var(--text-soft); font-size: 13px;">Waiting for live data from this vehicle...</div>';
@@ -674,6 +702,7 @@ async function pollVehicle() {
       }
     }
     S.sentryOn = vs.sentry_mode;
+    S.lastLocked = vs.locked;
     updateControlButtons();
     S.vehicleWasAsleep = false; // vehicle is awake now
     document.getElementById('sentryState').textContent = vs.sentry_mode ? 'Enabled' : 'Disabled';
@@ -824,8 +853,14 @@ function setDeterrent(mode) {
 }
 
 function toggleSentry() {
-  const newState = S.sentryOn ? 'off' : 'on';
-  sendCmd('set_sentry_mode', newState);
+  const state = pbLiveStateByVin[S.vehicleVin] || {};
+  let sentryActive;
+  if ('SentryMode' in state) {
+    sentryActive = state.SentryMode !== 'SentryModeStateOff' && state.SentryMode !== 'SentryModeStateIdle';
+  } else {
+    sentryActive = !!S.sentryOn;
+  }
+  sendCmd('set_sentry_mode', sentryActive ? 'off' : 'on');
 }
 
 function toggleLock() {
@@ -836,23 +871,37 @@ function toggleLock() {
 }
 
 function updateControlButtons() {
+  const state = pbLiveStateByVin[S.vehicleVin] || {};
+  
+  // Sentry button - prefer telemetry value, fall back to S.sentryOn from polling
   const sentryBtn = document.getElementById('sentryBtn');
   if (sentryBtn) {
-    if (S.sentryOn) {
+    let sentryActive;
+    if ('SentryMode' in state) {
+      sentryActive = state.SentryMode !== 'SentryModeStateOff' && state.SentryMode !== 'SentryModeStateIdle';
+    } else {
+      sentryActive = !!S.sentryOn;
+    }
+    if (sentryActive) {
       sentryBtn.textContent = '🛡 Sentry on';
       sentryBtn.className = 'btn btn-green';
+      sentryBtn.style.cssText = '';
     } else {
       sentryBtn.textContent = '🛡 Sentry off';
       sentryBtn.className = 'btn';
-      sentryBtn.style.background = 'var(--red-bg)';
-      sentryBtn.style.color = 'var(--red-text)';
-      sentryBtn.style.borderColor = '#F09595';
+      sentryBtn.style.cssText = 'background:var(--red-bg);color:var(--red-text);border-color:#F09595;';
     }
   }
+  
+  // Lock button - prefer telemetry, fall back to last known polled state
   const lockBtn = document.getElementById('lockBtn');
   if (lockBtn) {
-    const state = pbLiveStateByVin[S.vehicleVin] || {};
-    const isLocked = state.Locked === true;
+    let isLocked;
+    if ('Locked' in state) {
+      isLocked = state.Locked === true;
+    } else {
+      isLocked = S.lastLocked !== false; // default to locked if unknown
+    }
     if (isLocked) {
       lockBtn.textContent = '🔒 Locked';
       lockBtn.className = 'btn btn-green';
