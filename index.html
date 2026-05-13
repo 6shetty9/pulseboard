@@ -104,6 +104,11 @@ input:checked + .slider:before { transform: translateX(20px); }
 .live-on { background: rgba(34,197,94,0.2) !important; color: #16a34a !important; }
 .live-on::before { content: "●"; margin-right: 4px; animation: pulse-dot 1.5s ease-in-out infinite; }
 @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.cat-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.cat-tab { padding: 6px 10px; border: 1px solid var(--border); border-radius: 14px; background: transparent; font-size: 12px; cursor: pointer; color: var(--text-soft); white-space: nowrap; }
+.cat-tab:hover { background: rgba(0,0,0,0.04); }
+.cat-tab.active { background: var(--text); color: white; border-color: var(--text); }
 </style>
 </head>
 <body>
@@ -438,53 +443,125 @@ async function triggerDeterrent(reason) {
   } catch(e) { console.log('Deterrent failed:', e); }
 }
 
+const TELEMETRY_CATEGORIES = {
+  'Battery & Energy': {
+    icon: '🔋',
+    fields: ['Soc','BatteryLevel','EstBatteryRange','RatedRange','IdealBatteryRange']
+  },
+  'Charging': {
+    icon: '⚡',
+    fields: ['ChargeState','DetailedChargeState','ChargeLimitSoc','ChargeAmps','ChargerVoltage','ChargerPhases','TimeToFullCharge','ChargePortDoorOpen','ChargePort','FastChargerType','FastChargerPresent']
+  },
+  'Climate': {
+    icon: '🌡',
+    fields: ['InsideTemp','OutsideTemp','ClimateKeeperMode','HvacACEnabled','HvacAutoMode','HvacFanSpeed','HvacPower','DefrostMode','SeatHeaterLeft','SeatHeaterRight']
+  },
+  'Security': {
+    icon: '🛡',
+    fields: ['Locked','SentryMode','DoorState','FdWindow','FpWindow','RdWindow','RpWindow','DriverSeatBelt','DriverSeatOccupied']
+  },
+  'Motion & Location': {
+    icon: '📍',
+    fields: ['Gear','VehicleSpeed','Location','GpsHeading','Odometer','CruiseSetSpeed']
+  },
+  'Tires': {
+    icon: '🛞',
+    fields: ['TpmsPressureFl','TpmsPressureFr','TpmsPressureRl','TpmsPressureRr','TpmsHardWarnings','TpmsSoftWarnings']
+  },
+  'Media': {
+    icon: '🎵',
+    fields: ['MediaPlaybackStatus','MediaPlaybackSource','MediaAudioVolume','MediaNowPlayingTitle','MediaNowPlayingArtist','MediaNowPlayingAlbum','MediaNowPlayingStation','MediaNowPlayingDuration','MediaNowPlayingElapsed']
+  },
+  'Software': {
+    icon: '💾',
+    fields: ['Version','SoftwareUpdateVersion','SoftwareUpdateDownloadPercentComplete']
+  }
+};
+
 const FIELD_LABELS = {
-  Soc: 'State of charge',
-  BatteryLevel: 'Battery level',
-  EstBatteryRange: 'Est. range (mi)',
-  InsideTemp: 'Inside temp (°F)',
-  OutsideTemp: 'Outside temp (°F)',
-  Locked: 'Locked',
-  SentryMode: 'Sentry mode',
-  Gear: 'Gear',
-  VehicleSpeed: 'Speed (mph)',
-  ChargeState: 'Charge state',
-  TpmsPressureFl: 'Tire pressure front left (psi)',
-  TpmsPressureFr: 'Tire pressure front right (psi)',
-  TpmsPressureRl: 'Tire pressure rear left (psi)',
-  TpmsPressureRr: 'Tire pressure rear right (psi)'
+  Soc: 'State of charge (%)', BatteryLevel: 'Battery level (%)', EstBatteryRange: 'Est. range (mi)',
+  RatedRange: 'Rated range (mi)', IdealBatteryRange: 'Ideal range (mi)',
+  ChargeState: 'Charge state', DetailedChargeState: 'Detailed state', ChargeLimitSoc: 'Charge limit (%)',
+  ChargeAmps: 'Charge amps', ChargerVoltage: 'Charger voltage', ChargerPhases: 'Phases',
+  TimeToFullCharge: 'Time to full (hr)', ChargePortDoorOpen: 'Charge port open', ChargePort: 'Port state',
+  FastChargerType: 'Fast charger type', FastChargerPresent: 'Fast charger present',
+  InsideTemp: 'Inside temp (°F)', OutsideTemp: 'Outside temp (°F)', ClimateKeeperMode: 'Keeper mode',
+  HvacACEnabled: 'A/C', HvacAutoMode: 'Auto', HvacFanSpeed: 'Fan speed', HvacPower: 'Climate power',
+  DefrostMode: 'Defrost', SeatHeaterLeft: 'Driver seat heater', SeatHeaterRight: 'Passenger seat heater',
+  Locked: 'Locked', SentryMode: 'Sentry mode', DoorState: 'Doors',
+  FdWindow: 'Driver front window', FpWindow: 'Passenger front window',
+  RdWindow: 'Driver rear window', RpWindow: 'Passenger rear window',
+  DriverSeatBelt: 'Driver belt', DriverSeatOccupied: 'Driver seat',
+  Gear: 'Gear', VehicleSpeed: 'Speed (mph)', Location: 'Location', GpsHeading: 'Heading',
+  Odometer: 'Odometer (mi)', CruiseSetSpeed: 'Cruise set (mph)',
+  TpmsPressureFl: 'Front left (psi)', TpmsPressureFr: 'Front right (psi)',
+  TpmsPressureRl: 'Rear left (psi)', TpmsPressureRr: 'Rear right (psi)',
+  TpmsHardWarnings: 'Hard warnings', TpmsSoftWarnings: 'Soft warnings',
+  MediaPlaybackStatus: 'Playback', MediaPlaybackSource: 'Source', MediaAudioVolume: 'Volume',
+  MediaNowPlayingTitle: 'Title', MediaNowPlayingArtist: 'Artist', MediaNowPlayingAlbum: 'Album',
+  MediaNowPlayingStation: 'Station', MediaNowPlayingDuration: 'Duration (s)', MediaNowPlayingElapsed: 'Elapsed (s)',
+  Version: 'Software version', SoftwareUpdateVersion: 'Update version', SoftwareUpdateDownloadPercentComplete: 'Download (%)'
 };
 
 function formatFieldValue(name, val) {
   if (val === null || val === undefined) return '—';
-  if (name === 'SentryMode' && typeof val === 'string') return val.replace('SentryModeState', '') || 'Off';
-  if (name === 'Gear' && typeof val === 'string') return val.replace('ShiftState', '') || '—';
-  if (name === 'Locked') return val === true ? 'Yes' : 'No';
+  if (typeof val === 'string') {
+    if (name === 'SentryMode') return val.replace('SentryModeState', '') || 'Off';
+    if (name === 'Gear') return val.replace('ShiftState', '') || '—';
+    if (name === 'DetailedChargeState') return val.replace('DetailedChargeState', '');
+    if (name === 'ChargeState') return val.replace('ChargeState', '') || '—';
+    if (name === 'ChargePort') return val.replace('ChargePort', '');
+    if (name === 'FastChargerType') return val.replace('FastCharger', '');
+    if (name === 'MediaPlaybackStatus') return val.replace('MediaStatus', '');
+    if (name === 'DefrostMode') return val.replace('DefrostMode', '');
+    if (name === 'ClimateKeeperMode') return val.replace('ClimateKeeperMode', '');
+    if (name.endsWith('Window')) return val.replace('WindowState', '');
+    if (name === 'DoorState' && val.includes(',')) return val;
+  }
+  if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+  if (typeof val === 'object' && val !== null && 'latitude' in val) return `${val.latitude.toFixed(4)}, ${val.longitude.toFixed(4)}`;
   if ((name === 'InsideTemp' || name === 'OutsideTemp') && typeof val === 'number') return ((val * 9/5) + 32).toFixed(1);
   if (name.startsWith('TpmsPressure') && typeof val === 'number') return (val * 14.5038).toFixed(1);
-  if (typeof val === 'number') return val.toFixed(1);
+  if (typeof val === 'number') return Number.isInteger(val) ? String(val) : val.toFixed(1);
   return String(val);
+}
+
+let pbActiveCategory = 'Battery & Energy';
+
+function setCategory(name) {
+  pbActiveCategory = name;
+  updateLiveDisplay();
 }
 
 function updateLiveDisplay() {
   updateControlButtons();
   const el = document.getElementById('liveData');
   if (!el) return;
-  const state = pbLiveStateByVin[S.vehicleVin];
-  if (!state) {
-    el.innerHTML = '<div style="color: var(--text-soft); font-size: 13px;">Waiting for live data from this vehicle...</div>';
-    return;
+  const state = pbLiveStateByVin[S.vehicleVin] || {};
+  
+  // Build category tab bar
+  let tabsHtml = '<div class="cat-tabs">';
+  for (const name in TELEMETRY_CATEGORIES) {
+    const cat = TELEMETRY_CATEGORIES[name];
+    const active = name === pbActiveCategory;
+    tabsHtml += `<button class="cat-tab${active ? ' active' : ''}" onclick="setCategory('${name}')">${cat.icon} ${name}</button>`;
   }
-  const fields = ['Soc','BatteryLevel','EstBatteryRange','InsideTemp','OutsideTemp','Locked','SentryMode','Gear','VehicleSpeed','ChargeState','TpmsPressureFl','TpmsPressureFr','TpmsPressureRl','TpmsPressureRr'];
-  let html = '';
-  for (const f of fields) {
+  tabsHtml += '</div>';
+  
+  // Build active category content
+  const cat = TELEMETRY_CATEGORIES[pbActiveCategory];
+  let rowsHtml = '';
+  for (const f of cat.fields) {
+    const label = FIELD_LABELS[f] || f;
     if (f in state) {
-      const label = FIELD_LABELS[f] || f;
       const val = formatFieldValue(f, state[f]);
-      html += `<div class="row"><span class="row-label">${label}</span><span class="row-val">${val}</span></div>`;
+      rowsHtml += `<div class="row"><span class="row-label">${label}</span><span class="row-val">${val}</span></div>`;
+    } else {
+      rowsHtml += `<div class="row"><span class="row-label">${label}</span><span class="row-val" style="color: var(--text-soft);">—</span></div>`;
     }
   }
-  el.innerHTML = html || '<div style="color: var(--text-soft); font-size: 13px;">Waiting for live data from this vehicle...</div>';
+  
+  el.innerHTML = tabsHtml + rowsHtml;
 }
 
 async function api(path, method='GET', body=null) {
