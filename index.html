@@ -283,7 +283,7 @@ const SCOPES = 'openid offline_access vehicle_device_data vehicle_cmds vehicle_c
 const TESLA_AUTH = 'https://auth.tesla.com/oauth2/v3/authorize';
 const PROXY = 'https://long-credit-778c.sudhin-shetty.workers.dev';
 const API = PROXY + '/api/1';
-const LOCAL_PROXY = 'https://67.205.159.24:8080/api/1'; // DigitalOcean CORS proxy → tesla-http-proxy
+const LOCAL_PROXY = 'https://6shetty9.com:8080/api/1'; // DigitalOcean CORS proxy → tesla-http-proxy
 
 let S = {
   token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [], vehicleWasAsleep: false, fartOnSentry: true, deterrentMode: 'flash',
@@ -402,7 +402,7 @@ async function handleTelemetryEvent(evt) {
         const anyDoorOpen = ds && (ds.DriverFront || ds.PassengerFront || ds.DriverRear || ds.PassengerRear || ds.TrunkFront || ds.TrunkRear);
         if (anyDoorOpen && isLocked && isParked && !state._breachCooldown) {
           state._breachCooldown = true;
-          setTimeout(() => { state._breachCooldown = false; }, 20000);
+          setTimeout(() => { state._breachCooldown = false; }, 60000);
           const which = [];
           if (ds.DriverFront) which.push('driver front');
           if (ds.PassengerFront) which.push('passenger front');
