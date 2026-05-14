@@ -579,7 +579,45 @@ function setCategory(name) {
   updateLiveDisplay();
 }
 
+function updateVehicleCardFromTelemetry() {
+  const state = pbLiveStateByVin[S.vehicleVin];
+  if (!state) return;
+  
+  const setText = (id, val) => {
+    const el = document.getElementById(id);
+    if (el && val !== undefined && val !== null) el.textContent = val;
+  };
+  const setHtml = (id, html) => {
+    const el = document.getElementById(id);
+    if (el && html) el.innerHTML = html;
+  };
+  
+  if ('BatteryLevel' in state) {
+    setText('vc-batt', Math.round(state.BatteryLevel));
+    const fill = document.getElementById('vc-battfill');
+    if (fill) {
+      fill.style.width = state.BatteryLevel + '%';
+      fill.className = 'battery-fill ' + (state.BatteryLevel >= 50 ? 'fill-green' : state.BatteryLevel >= 25 ? 'fill-amber' : 'fill-red');
+    }
+  }
+  if ('EstBatteryRange' in state) setText('vc-range', Math.round(state.EstBatteryRange));
+  if ('ChargeLimitSoc' in state) setText('vc-limit', Math.round(state.ChargeLimitSoc));
+  if ('DetailedChargeState' in state) setText('vc-charge', String(state.DetailedChargeState).replace('DetailedChargeState', '') || 'Stopped');
+  if ('InsideTemp' in state) setText('vc-inside', Math.round(state.InsideTemp * 9/5 + 32) + '°F');
+  if ('OutsideTemp' in state) setText('vc-outside', Math.round(state.OutsideTemp * 9/5 + 32) + '°F');
+  if ('Odometer' in state) setText('vc-odo', Math.round(state.Odometer).toLocaleString() + ' mi');
+  if ('SentryMode' in state) {
+    const off = state.SentryMode === 'SentryModeStateOff' || state.SentryMode === 'SentryModeStateIdle';
+    setText('vc-sentry', off ? '❌ Disabled' : '✅ Enabled');
+  }
+  if ('VehicleSpeed' in state) setText('vc-speed', state.VehicleSpeed > 0 ? state.VehicleSpeed.toFixed(0) + ' mph' : 'Parked');
+  if (state.Location && state.Location.latitude) {
+    setHtml('vc-loc', `<a href="https://maps.google.com/?q=${state.Location.latitude},${state.Location.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a>`);
+  }
+}
+
 function updateLiveDisplay() {
+  updateVehicleCardFromTelemetry();
   updateControlButtons();
   const el = document.getElementById('liveData');
   if (!el) return;
@@ -792,18 +830,18 @@ async function loadVehicleCard() {
         </div>
       </div>
       <div class="card-title">Battery</div>
-      <div style="font-size:24px;font-weight:600;">${batt}% <span style="font-size:14px;font-weight:400;color:var(--muted);">${Math.round(cs.battery_range)} mi range</span></div>
-      <div class="battery-track"><div class="battery-fill ${bc}" style="width:${batt}%"></div></div>
-      <div class="batt-labels"><span>0%</span><span>Charge limit: ${cs.charge_limit_soc}%</span><span>100%</span></div>
+      <div style="font-size:24px;font-weight:600;"><span id="vc-batt">${batt}</span>% <span style="font-size:14px;font-weight:400;color:var(--muted);"><span id="vc-range">${Math.round(cs.battery_range)}</span> mi range</span></div>
+      <div class="battery-track"><div id="vc-battfill" class="battery-fill ${bc}" style="width:${batt}%"></div></div>
+      <div class="batt-labels"><span>0%</span><span>Charge limit: <span id="vc-limit">${cs.charge_limit_soc}</span>%</span><span>100%</span></div>
       <div style="margin-top:16px;" class="card-title">Details</div>
-      <div class="row"><span class="row-label">Charging status</span><span class="row-val">${cs.charging_state}</span></div>
-      <div class="row"><span class="row-label">Inside temp</span><span class="row-val">${fT(cl.inside_temp)}</span></div>
-      <div class="row"><span class="row-label">Outside temp</span><span class="row-val">${fT(cl.outside_temp)}</span></div>
+      <div class="row"><span class="row-label">Charging status</span><span class="row-val" id="vc-charge">${cs.charging_state}</span></div>
+      <div class="row"><span class="row-label">Inside temp</span><span class="row-val" id="vc-inside">${fT(cl.inside_temp)}</span></div>
+      <div class="row"><span class="row-label">Outside temp</span><span class="row-val" id="vc-outside">${fT(cl.outside_temp)}</span></div>
       <div class="row"><span class="row-label">Climate</span><span class="row-val">${cl.is_climate_on?'On':'Off'} (set ${fT(cl.driver_temp_setting)})</span></div>
-      <div class="row"><span class="row-label">Odometer</span><span class="row-val">${Math.round(vs.odometer).toLocaleString()} mi</span></div>
-      <div class="row"><span class="row-label">Sentry mode</span><span class="row-val">${vs.sentry_mode?'✅ Enabled':'❌ Disabled'}</span></div>
-      <div class="row"><span class="row-label">Speed</span><span class="row-val">${ds.speed?ds.speed+' mph':'Parked'}</span></div>
-      <div class="row"><span class="row-label">Location</span><span class="row-val"><a href="https://maps.google.com/?q=${ds.latitude},${ds.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a></span></div>
+      <div class="row"><span class="row-label">Odometer</span><span class="row-val" id="vc-odo">${Math.round(vs.odometer).toLocaleString()} mi</span></div>
+      <div class="row"><span class="row-label">Sentry mode</span><span class="row-val" id="vc-sentry">${vs.sentry_mode?'✅ Enabled':'❌ Disabled'}</span></div>
+      <div class="row"><span class="row-label">Speed</span><span class="row-val" id="vc-speed">${ds.speed?ds.speed+' mph':'Parked'}</span></div>
+      <div class="row"><span class="row-label">Location</span><span class="row-val" id="vc-loc"><a href="https://maps.google.com/?q=${ds.latitude},${ds.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a></span></div>
       <div class="row"><span class="row-label">Software</span><span class="row-val">${vs.car_version||'—'}</span></div>
     `;
   } catch(e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
