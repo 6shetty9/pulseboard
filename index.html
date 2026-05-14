@@ -519,10 +519,24 @@ function modelFromVin(vin) {
   return 'm3';
 }
 
+function colorForName(v) {
+  if (!v) return 'inherit';
+  const model = modelFromVin(v.vin);
+  if (model === 'm3') return '#1f6feb';
+  if (model === 'my') return '#dc2626';
+  return 'inherit';
+}
+
 function vehicleImg(v) {
   if (!v || !v.vin) return '<div style="font-size:20px;">🚗</div>';
-  // Tesla's own compositor API - actual product renders, no auth needed
-  const url = `https://static-assets.tesla.com/configurator/compositor?context=design_studio_2&options=$MTY12,$PPSW,$WY20P&view=STUD_3QTR&size=120&model=${modelFromVin(v.vin) === 'my' ? 'my' : 'm3'}&bkba_opt=1`;
+  const model = modelFromVin(v.vin);
+  // Tesla compositor paint codes: PPSB=Deep Blue Metallic, PPMR=Multi-Coat Red
+  let url;
+  if (model === 'my') {
+    url = 'https://static-assets.tesla.com/configurator/compositor?context=design_studio_2&options=$MTY12,$PPMR,$WY20P&view=STUD_3QTR&size=120&model=my&bkba_opt=1';
+  } else {
+    url = 'https://static-assets.tesla.com/configurator/compositor?context=design_studio_2&options=$MT302,$PPSB,$W38B&view=STUD_3QTR&size=120&model=m3&bkba_opt=1';
+  }
   return `<img src="${url}" alt="${v.name}" style="width:60px;height:auto;object-fit:contain;" onerror="this.outerHTML='&lt;div style=font-size:24px&gt;🚗&lt;/div&gt;'"/>`;
 }
 
@@ -539,10 +553,18 @@ function formatFieldValue(name, val) {
     if (name === 'DefrostMode') return val.replace('DefrostMode', '');
     if (name === 'ClimateKeeperMode') return val.replace('ClimateKeeperMode', '');
     if (name.endsWith('Window')) return val.replace('WindowState', '');
-    if (name === 'DoorState' && val.includes(',')) return val;
+    // DoorState string handling (some firmwares)
+    if (name === 'DoorState') {
+      if (typeof val === 'string') return val.replace(/([A-Z])/g, ' $1').trim() || 'All closed';
+    }
   }
   if (typeof val === 'boolean') return val ? 'Yes' : 'No';
   if (typeof val === 'object' && val !== null && 'latitude' in val) return null; // handled separately
+  if (name === 'DoorState' && typeof val === 'object' && val !== null) {
+    const labels = { DriverFront: 'Driver front', PassengerFront: 'Passenger front', DriverRear: 'Driver rear', PassengerRear: 'Passenger rear', TrunkFront: 'Frunk', TrunkRear: 'Trunk' };
+    const open = Object.entries(val).filter(([k, v]) => v === true).map(([k]) => labels[k] || k);
+    return open.length ? open.join(', ') : 'All closed';
+  }
   if ((name === 'InsideTemp' || name === 'OutsideTemp') && typeof val === 'number') return ((val * 9/5) + 32).toFixed(1);
   if (name.startsWith('TpmsPressure') && typeof val === 'number') return (val * 14.5038).toFixed(1);
   if (name === 'GpsHeading' && typeof val === 'number') return headingToCompass(val);
