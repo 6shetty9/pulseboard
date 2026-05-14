@@ -509,38 +509,21 @@ function headingToCompass(deg) {
   return dirs[Math.round(((deg % 360) / 22.5)) % 16] + ' (' + Math.round(deg) + '°)';
 }
 
-function carSvg(model, color, rotation) {
-  // Generic car silhouette - same SVG for both models, different color
-  const rot = rotation !== null && rotation !== undefined ? rotation : 0;
-  return `<svg viewBox="0 0 64 64" width="44" height="44" style="transform: rotate(${rot}deg); transition: transform 0.5s ease;">
-    <g fill="${color}" stroke="${color}" stroke-width="1">
-      <path d="M32 6 L40 16 L42 28 L43 44 L40 56 L24 56 L21 44 L22 28 L24 16 Z"/>
-      <path d="M26 18 L38 18 L37 26 L27 26 Z" fill="rgba(255,255,255,0.15)"/>
-      <path d="M27 28 L37 28 L37 42 L27 42 Z" fill="rgba(255,255,255,0.08)"/>
-      <circle cx="26" cy="50" r="2" fill="#000"/>
-      <circle cx="38" cy="50" r="2" fill="#000"/>
-      <circle cx="26" cy="18" r="2" fill="#000"/>
-      <circle cx="38" cy="18" r="2" fill="#000"/>
-    </g>
-  </svg>`;
-}
-
 function modelFromVin(vin) {
   if (!vin) return 'unknown';
-  const c = vin[3]; // 4th char encodes model
-  if (c === '3' || c === 'E') return 'model3';
-  if (c === 'Y' || c === 'G') return 'modely';
-  if (c === 'S') return 'models';
-  if (c === 'X') return 'modelx';
-  return 'unknown';
+  const c = vin[3];
+  if (c === '3' || c === 'E') return 'm3';
+  if (c === 'Y' || c === 'G') return 'my';
+  if (c === 'S') return 'ms';
+  if (c === 'X') return 'mx';
+  return 'm3';
 }
 
-function colorForVehicle(v) {
-  // M3L gets blue, MYP gets red, others gray
-  const model = modelFromVin(v.vin);
-  if (model === 'model3') return '#1f6feb';
-  if (model === 'modely') return '#dc2626';
-  return '#6b7280';
+function vehicleImg(v) {
+  if (!v || !v.vin) return '<div style="font-size:20px;">🚗</div>';
+  // Tesla's own compositor API - actual product renders, no auth needed
+  const url = `https://static-assets.tesla.com/configurator/compositor?context=design_studio_2&options=$MTY12,$PPSW,$WY20P&view=STUD_3QTR&size=120&model=${modelFromVin(v.vin) === 'my' ? 'my' : 'm3'}&bkba_opt=1`;
+  return `<img src="${url}" alt="${v.name}" style="width:60px;height:auto;object-fit:contain;" onerror="this.outerHTML='&lt;div style=font-size:24px&gt;🚗&lt;/div&gt;'"/>`;
 }
 
 function formatFieldValue(name, val) {
@@ -740,7 +723,7 @@ function renderPicker() {
   if (S.vehicles.length === 0) { el.innerHTML = '<div class="empty">No vehicles found.</div>'; return; }
   el.innerHTML = S.vehicles.map(v => `
     <div class="v-card ${v.id === S.vehicleId ? 'active' : ''}" onclick="switchVehicle('${v.id}')">
-      <div class="v-icon" style="background: transparent;">${carSvg(modelFromVin(v.vin), colorForVehicle(v), 0)}</div>
+      <div class="v-icon" style="background: transparent; width: 60px;">${vehicleImg(v)}</div>
       <div>
         <div class="v-name">${v.name} ${v.id === S.vehicleId ? '<span style="font-size:11px;color:var(--green);">● Active</span>' : ''}</div>
         <div class="v-vin">VIN: ${v.vin}</div>
@@ -780,7 +763,7 @@ async function loadVehicleCard() {
     const fT = c => Math.round(c * 9/5 + 32) + '°F';
     el.innerHTML = `
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border);">
-        <div style="width:44px;height:44px;border-radius:10px;background:var(--bg);display:flex;align-items:center;justify-content:center;">${(() => { const v = S.vehicles.find(x => x.id === S.vehicleId) || {vin: S.vehicleVin}; const state = pbLiveStateByVin[S.vehicleVin] || {}; const heading = (state.VehicleSpeed > 1 && typeof state.GpsHeading === 'number') ? state.GpsHeading : 0; return carSvg(modelFromVin(v.vin), colorForVehicle(v), heading); })()}</div>
+        <div style="width:60px;height:40px;display:flex;align-items:center;justify-content:center;">${vehicleImg(S.vehicles.find(x => x.id === S.vehicleId) || {vin: S.vehicleVin})}</div>
         <div>
           <div style="font-size:17px;font-weight:600;">${S.vehicleName}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px;"><span class="${d.state==='online'?'dot-on':'dot-off'}"></span>${d.state} · ${vs.locked?'Locked':'⚠ Unlocked'} · VIN: ${d.vin||'—'}</div>
