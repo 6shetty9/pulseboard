@@ -156,14 +156,15 @@ input:checked + .slider:before { transform: translateX(20px); }
 
   <div id="dashView" style="display:none;">
     <div class="tabs">
-      <button class="tab active" onclick="showTab('monitor',this)">Sentry monitor</button>
-      <button class="tab" onclick="showTab('vehicle',this)">Vehicle</button>
+      <button class="tab active" onclick="showTab('vehicle',this)">Vehicle</button>
+      <button class="tab" onclick="showTab('monitor',this)">Sentry monitor</button>
+      <button class="tab" onclick="showTab('charge',this)">Charge</button>
       <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
       <button class="tab" onclick="showTab('notify',this)">Notifications</button>
       <button class="tab" onclick="showTab('settings',this)">Settings</button>
     </div>
 
-    <div id="tab-monitor">
+    <div id="tab-monitor" style="display:none;">
       <div class="grid4">
         <div class="stat"><div class="stat-label">Sentry mode</div><div class="stat-val" id="sentryState">—</div><div class="stat-sub" id="sentryStateSub">—</div></div>
         <div class="stat"><div class="stat-label">Events today</div><div class="stat-val" id="eventCount">0</div><div class="stat-sub" id="lastEventTime">No events yet</div></div>
@@ -190,13 +191,23 @@ input:checked + .slider:before { transform: translateX(20px); }
       </div>
     </div>
 
-    <div id="tab-vehicle" style="display:none;">
+    <div id="tab-vehicle">
       <div class="card" id="vehiclePickerCard">
         <div class="card-title">Your vehicles — click to switch</div>
         <div id="vehiclePicker"></div>
       </div>
       <div class="card" id="vehicleCard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
-      <div class="card" id="chargingControls">
+      <div class="card">
+        <div class="card-title">
+          Live telemetry
+          <span id="liveStatus" class="pill pill-off" style="margin-left: 8px; font-size: 11px;">offline</span>
+        </div>
+        <div id="liveData"><div style="color: var(--text-soft); font-size: 13px;">Waiting for live data...</div></div>
+      </div>
+    </div>
+
+    <div id="tab-charge" style="display:none;">
+      <div class="card">
         <div class="card-title">⚡ Charging controls</div>
         <div style="margin-bottom: 14px;">
           <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
@@ -220,11 +231,12 @@ input:checked + .slider:before { transform: translateX(20px); }
         </div>
       </div>
       <div class="card">
-        <div class="card-title">
-          Live telemetry
-          <span id="liveStatus" class="pill pill-off" style="margin-left: 8px; font-size: 11px;">offline</span>
-        </div>
-        <div id="liveData"><div style="color: var(--text-soft); font-size: 13px;">Waiting for live data...</div></div>
+        <div class="card-title">Charge history</div>
+        <div class="empty">Coming soon — historical charge sessions and graphs.</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Battery health</div>
+        <div class="empty">Coming soon — degradation tracking over time.</div>
       </div>
     </div>
 
@@ -794,12 +806,13 @@ async function showDash() {
 }
 
 function showTab(name, el) {
-  ['monitor','vehicle','alerts','notify','settings'].forEach(t => {
+  ['monitor','vehicle','charge','alerts','notify','settings'].forEach(t => {
     document.getElementById('tab-'+t).style.display = t===name ? 'block' : 'none';
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   if (name === 'vehicle') { renderPicker(); loadVehicleCard(); }
+  if (name === 'charge') { syncChargeSliders(); }
 }
 
 function renderPicker() {
