@@ -185,8 +185,6 @@ input:checked + .slider:before { transform: translateX(20px); }
           <button class="btn" id="sentryBtn" onclick="toggleSentry()">Sentry</button>
           <button class="btn" id="lockBtn" onclick="toggleLock()">Locks</button>
           <button class="btn" id="chargeBtn" onclick="toggleCharge()">⚡ Charge</button>
-          <button class="btn" onclick="setChargeLimit()">🎯 Set limit</button>
-          <button class="btn" onclick="setChargeAmps()">🔌 Set amps</button>
           <button class="btn" onclick="testAlert()">Test alert</button>
         </div>
       </div>
@@ -198,6 +196,29 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div id="vehiclePicker"></div>
       </div>
       <div class="card" id="vehicleCard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      <div class="card" id="chargingControls">
+        <div class="card-title">⚡ Charging controls</div>
+        <div style="margin-bottom: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
+            <span style="font-size: 13px; color: var(--muted);">Charge limit</span>
+            <span id="chargeLimitVal" style="font-size: 16px; font-weight: 600;">—%</span>
+          </div>
+          <input type="range" id="chargeLimitSlider" min="50" max="100" step="5" oninput="onChargeLimitInput(this.value)" onchange="onChargeLimitCommit(this.value)" style="width: 100%; accent-color: var(--green);"/>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-soft); margin-top: 2px;">
+            <span>50%</span><span>75%</span><span>100%</span>
+          </div>
+        </div>
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
+            <span style="font-size: 13px; color: var(--muted);">Charge amps</span>
+            <span id="chargeAmpsVal" style="font-size: 16px; font-weight: 600;">—A</span>
+          </div>
+          <input type="range" id="chargeAmpsSlider" min="1" max="48" step="1" oninput="onChargeAmpsInput(this.value)" onchange="onChargeAmpsCommit(this.value)" style="width: 100%; accent-color: var(--green);"/>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-soft); margin-top: 2px;">
+            <span>1A</span><span>24A</span><span>48A</span>
+          </div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-title">
           Live telemetry
@@ -621,6 +642,7 @@ function updateVehicleCardFromTelemetry() {
 
 function updateLiveDisplay() {
   updateVehicleCardFromTelemetry();
+  syncChargeSliders();
   updateControlButtons();
   const el = document.getElementById('liveData');
   if (!el) return;
@@ -961,28 +983,42 @@ async function toggleCharge() {
   await sendCmd(charging ? 'charge_stop' : 'charge_start');
 }
 
-async function setChargeLimit() {
-  const current = pbLiveStateByVin[S.vehicleVin]?.ChargeLimitSoc || 80;
-  const input = prompt(`Set charge limit (50-100%):`, Math.round(current));
-  if (!input) return;
-  const pct = parseInt(input);
-  if (isNaN(pct) || pct < 50 || pct > 100) {
-    alert('Please enter a number between 50 and 100');
-    return;
-  }
-  await sendCmd('set_charge_limit', { percent: pct });
+// Debounce timers so sliding doesn't spam the API
+let _chargeLimitTimer = null;
+let _chargeAmpsTimer = null;
+
+function onChargeLimitInput(val) {
+  document.getElementById('chargeLimitVal').textContent = val + '%';
+}
+function onChargeLimitCommit(val) {
+  clearTimeout(_chargeLimitTimer);
+  _chargeLimitTimer = setTimeout(() => sendCmd('set_charge_limit', { percent: parseInt(val) }), 300);
+}
+function onChargeAmpsInput(val) {
+  document.getElementById('chargeAmpsVal').textContent = val + 'A';
+}
+function onChargeAmpsCommit(val) {
+  clearTimeout(_chargeAmpsTimer);
+  _chargeAmpsTimer = setTimeout(() => sendCmd('set_charging_amps', { charging_amps: parseInt(val) }), 300);
 }
 
-async function setChargeAmps() {
-  const current = pbLiveStateByVin[S.vehicleVin]?.ChargeAmps || 32;
-  const input = prompt(`Set charging amps (1-48A):`, Math.round(current));
-  if (!input) return;
-  const amps = parseInt(input);
-  if (isNaN(amps) || amps < 1 || amps > 48) {
-    alert('Please enter a number between 1 and 48');
-    return;
+function syncChargeSliders() {
+  const state = pbLiveStateByVin[S.vehicleVin];
+  if (!state) return;
+  if ('ChargeLimitSoc' in state) {
+    const limit = Math.round(state.ChargeLimitSoc);
+    const slider = document.getElementById('chargeLimitSlider');
+    const label = document.getElementById('chargeLimitVal');
+    if (slider && document.activeElement !== slider) slider.value = limit;
+    if (label) label.textContent = limit + '%';
   }
-  await sendCmd('set_charging_amps', { charging_amps: amps });
+  if ('ChargeAmps' in state) {
+    const amps = Math.round(state.ChargeAmps);
+    const slider = document.getElementById('chargeAmpsSlider');
+    const label = document.getElementById('chargeAmpsVal');
+    if (slider && document.activeElement !== slider) slider.value = amps;
+    if (label) label.textContent = amps + 'A';
+  }
 }
 
 async function testAlert() { await fireAlert('test','Test alert','All alert channels active','err'); }
