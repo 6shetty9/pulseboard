@@ -184,6 +184,9 @@ input:checked + .slider:before { transform: translateX(20px); }
           <button class="btn btn-blue" onclick="wakeVehicle()">⏰ Wake vehicle</button>
           <button class="btn" id="sentryBtn" onclick="toggleSentry()">Sentry</button>
           <button class="btn" id="lockBtn" onclick="toggleLock()">Locks</button>
+          <button class="btn" id="chargeBtn" onclick="toggleCharge()">⚡ Charge</button>
+          <button class="btn" onclick="setChargeLimit()">🎯 Set limit</button>
+          <button class="btn" onclick="setChargeAmps()">🔌 Set amps</button>
           <button class="btn" onclick="testAlert()">Test alert</button>
         </div>
       </div>
@@ -935,20 +938,51 @@ function pollNow() {
 
 async function sendCmd(cmd, val) {
   if (!S.vehicleVin) return;
-  // Commands require local proxy — warn if on mobile/remote
-  const isLocalhost = window.location.hostname === 'localhost' || 
-    ['127.0.0.1','::1'].includes(window.location.hostname);
-  const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
-  if (isMobile) {
-    alert('Commands require the PulseBoard proxy running on your Mac. Use your desktop to send commands, or monitor only on mobile.');
-    return;
+  // Build body based on argument type - boolean toggles use {on}, others pass through
+  let body = {};
+  if (val !== undefined && val !== null) {
+    if (val === 'on' || val === 'off') body = { on: val === 'on' };
+    else if (typeof val === 'object') body = val;
+    else body = { on: val };
   }
-  const body = val !== undefined ? { on: val === 'on' } : {};
   try {
     const r = await cmdApi(`/vehicles/${S.vehicleVin}/command/${cmd}`, 'POST', body);
     const d = await r.json();
     await fireAlert('cmd', cmd.replace(/_/g,' '), d.response?.result ? 'Command sent successfully' : (d.response?.reason||'Sent'), 'ok');
   } catch(e) { alert('Error: '+e.message); }
+}
+
+async function toggleCharge() {
+  const state = pbLiveStateByVin[S.vehicleVin] || {};
+  const charging = state.DetailedChargeState === 'DetailedChargeStateCharging';
+  if (!charging && state.ChargePortDoorOpen !== true) {
+    if (!confirm('Charge port appears closed. Start charging anyway?')) return;
+  }
+  await sendCmd(charging ? 'charge_stop' : 'charge_start');
+}
+
+async function setChargeLimit() {
+  const current = pbLiveStateByVin[S.vehicleVin]?.ChargeLimitSoc || 80;
+  const input = prompt(`Set charge limit (50-100%):`, Math.round(current));
+  if (!input) return;
+  const pct = parseInt(input);
+  if (isNaN(pct) || pct < 50 || pct > 100) {
+    alert('Please enter a number between 50 and 100');
+    return;
+  }
+  await sendCmd('set_charge_limit', { percent: pct });
+}
+
+async function setChargeAmps() {
+  const current = pbLiveStateByVin[S.vehicleVin]?.ChargeAmps || 32;
+  const input = prompt(`Set charging amps (1-48A):`, Math.round(current));
+  if (!input) return;
+  const amps = parseInt(input);
+  if (isNaN(amps) || amps < 1 || amps > 48) {
+    alert('Please enter a number between 1 and 48');
+    return;
+  }
+  await sendCmd('set_charging_amps', { charging_amps: amps });
 }
 
 async function testAlert() { await fireAlert('test','Test alert','All alert channels active','err'); }
@@ -1067,6 +1101,21 @@ function updateControlButtons() {
     }
   }
   
+  // Charge button - reflects active charging state
+  const chargeBtn = document.getElementById('chargeBtn');
+  if (chargeBtn) {
+    const charging = state.DetailedChargeState === 'DetailedChargeStateCharging';
+    if (charging) {
+      chargeBtn.textContent = '⚡ Charging';
+      chargeBtn.className = 'btn btn-green';
+      chargeBtn.style.cssText = '';
+    } else {
+      chargeBtn.textContent = '⚡ Charge';
+      chargeBtn.className = 'btn';
+      chargeBtn.style.cssText = '';
+    }
+  }
+
   // Lock button - prefer telemetry, fall back to last known polled state
   const lockBtn = document.getElementById('lockBtn');
   if (lockBtn) {
