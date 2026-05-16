@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PulseBoard — Tesla Monitor</title>
@@ -231,8 +232,15 @@ input:checked + .slider:before { transform: translateX(20px); }
         </div>
       </div>
       <div class="card">
-        <div class="card-title">Charge history</div>
-        <div class="empty">Coming soon — historical charge sessions and graphs.</div>
+        <div class="card-title">Current/recent charge</div>
+        <div id="chargeChartWrap" style="position: relative; height: 240px;">
+          <canvas id="chargeChart"></canvas>
+        </div>
+        <div id="chargeChartEmpty" style="text-align: center; color: var(--text-soft); font-size: 13px; padding: 60px 0;">Loading…</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Past charging sessions</div>
+        <div id="chargeSessions"><div class="empty">Loading…</div></div>
       </div>
       <div class="card">
         <div class="card-title">Battery health</div>
@@ -812,7 +820,7 @@ function showTab(name, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   if (name === 'vehicle') { renderPicker(); loadVehicleCard(); }
-  if (name === 'charge') { syncChargeSliders(); }
+  if (name === 'charge') { syncChargeSliders(); loadChargeChart(); loadChargeSessions(); }
 }
 
 function renderPicker() {
@@ -1223,6 +1231,76 @@ if (storedCode && Date.now() - storedTs < 30000) {
 // Connect telemetry when token is available
 setTimeout(() => {
   if (S.token) connectTelemetry();
+
+let chargeChart = null;
+
+async function loadChargeChart() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !S.vehicleVin) return;
+  const now = Math.floor(Date.now() / 1000);
+  const dayAgo = now - 86400;
+  try {
+    const r = await fetch(`https://telemetry.6shetty9.com:8444/history?secret=${secret}&vin=${S.vehicleVin}&field=Soc&from=${dayAgo}&to=${now}`);
+    const d = await r.json();
+    const empty = document.getElementById('chargeChartEmpty');
+    const wrap = document.getElementById('chargeChartWrap');
+    if (!d.points || d.points.length < 2) {
+      if (empty) { empty.style.display='block'; empty.textContent='Not enough data yet — charge the car to see a graph.'; }
+      if (wrap) wrap.style.display = 'none';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    if (wrap) wrap.style.display = 'block';
+    const ctx = document.getElementById('chargeChart').getContext('2d');
+    if (chargeChart) chargeChart.destroy();
+    chargeChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: d.points.map(p => new Date(p.ts * 1000)),
+        datasets: [{
+          label: 'State of charge (%)',
+          data: d.points.map(p => p.val),
+          borderColor: '#16a34a',
+          backgroundColor: 'rgba(22, 163, 74, 0.1)',
+          fill: true, tension: 0.2, pointRadius: 0, borderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { type: 'time', time: { unit: 'hour' }, ticks: { maxTicksLimit: 8 } },
+          y: { min: 0, max: 100, title: { display: true, text: '%' } }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
+  } catch(e) { console.log('chart load failed:', e); }
+}
+
+async function loadChargeSessions() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !S.vehicleVin) return;
+  const el = document.getElementById('chargeSessions');
+  if (!el) return;
+  try {
+    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/charging?secret=${secret}&vin=${S.vehicleVin}`);
+    const d = await r.json();
+    if (!d.sessions || d.sessions.length === 0) {
+      el.innerHTML = '<div class="empty">No past charging sessions recorded yet.</div>';
+      return;
+    }
+    el.innerHTML = d.sessions.map(s => {
+      const start = new Date(s.start_ts * 1000).toLocaleString();
+      const dur = Math.round(s.duration_s / 60);
+      const hrs = Math.floor(dur / 60), mins = dur % 60;
+      const durStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+      return `<div class="row">
+        <span class="row-label">${start}</span>
+        <span class="row-val">+${s.soc_delta.toFixed(1)}% &nbsp;·&nbsp; ${durStr} &nbsp;·&nbsp; ${s.start_soc.toFixed(0)}→${s.end_soc.toFixed(0)}%</span>
+      </div>`;
+    }).join('');
+  } catch(e) { console.log('sessions load failed:', e); }
+}
 }, 500);
 
 // Initialize deterrent selector state
