@@ -1231,6 +1231,7 @@ if (storedCode && Date.now() - storedTs < 30000) {
 // Connect telemetry when token is available
 setTimeout(() => {
   if (S.token) connectTelemetry();
+}, 500);
 
 let chargeChart = null;
 
@@ -1301,7 +1302,6 @@ async function loadChargeSessions() {
     }).join('');
   } catch(e) { console.log('sessions load failed:', e); }
 }
-}, 500);
 
 // Initialize deterrent selector state
 setTimeout(() => {
