@@ -40,6 +40,12 @@
     .chip { padding: 5px 12px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; font-weight: 500; }
     .chip:hover { color: var(--text); }
     .chip.chip-active { background: var(--text); color: var(--bg); border-color: var(--text); }
+    input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; background: var(--border); border-radius: 3px; outline: none; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; background: var(--text); border-radius: 50%; cursor: pointer; }
+    input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; background: var(--text); border-radius: 50%; cursor: pointer; border: none; }
+    .emoji-chip { font-size: 18px; line-height: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: transparent; cursor: pointer; transition: all 0.1s; }
+    .emoji-chip:hover { border-color: var(--text); }
+    .emoji-chip.emoji-chip-active { background: var(--text); border-color: var(--text); transform: scale(1.05); }
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 12px; }
     .card-title { font-size: 11px; color: var(--hint); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-bottom: 12px; }
     .grid4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-bottom: 12px; }
@@ -298,14 +304,26 @@ input:checked + .slider:before { transform: translateX(20px); }
 
       <div id="zoneEditorCard" class="card" style="display:none;">
         <div class="card-title"><span id="zoneEditorTitle">New zone</span></div>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-          <div>
-            <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Name</label>
-            <input id="zName" type="text" placeholder="e.g. Home" style="width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;" />
-          </div>
-          <div>
-            <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Emoji</label>
-            <input id="zEmoji" type="text" placeholder="🏠" maxlength="4" style="width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;" />
+        <div style="margin-bottom: 10px;">
+          <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Name</label>
+          <input id="zName" type="text" placeholder="e.g. Home" style="width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;" />
+        </div>
+        <div style="margin-bottom: 10px;">
+          <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:6px;">Emoji</label>
+          <div id="zEmojiChips" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+            <button type="button" class="emoji-chip" data-emoji="🏠" onclick="pickEmoji(this)">🏠</button>
+            <button type="button" class="emoji-chip" data-emoji="🏢" onclick="pickEmoji(this)">🏢</button>
+            <button type="button" class="emoji-chip" data-emoji="🏫" onclick="pickEmoji(this)">🏫</button>
+            <button type="button" class="emoji-chip" data-emoji="🛒" onclick="pickEmoji(this)">🛒</button>
+            <button type="button" class="emoji-chip" data-emoji="✈️" onclick="pickEmoji(this)">✈️</button>
+            <button type="button" class="emoji-chip" data-emoji="🏋️" onclick="pickEmoji(this)">🏋️</button>
+            <button type="button" class="emoji-chip" data-emoji="⛪" onclick="pickEmoji(this)">⛪</button>
+            <button type="button" class="emoji-chip" data-emoji="🏥" onclick="pickEmoji(this)">🏥</button>
+            <button type="button" class="emoji-chip" data-emoji="🌳" onclick="pickEmoji(this)">🌳</button>
+            <button type="button" class="emoji-chip" data-emoji="🍽️" onclick="pickEmoji(this)">🍽️</button>
+            <button type="button" class="emoji-chip" data-emoji="⚡" onclick="pickEmoji(this)">⚡</button>
+            <button type="button" class="emoji-chip" data-emoji="📍" onclick="pickEmoji(this)">📍</button>
+            <input id="zEmoji" type="text" placeholder="…or type" maxlength="4" oninput="onEmojiTyped()" style="width:72px; padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:14px; text-align:center;" />
           </div>
         </div>
         <div style="margin-bottom: 10px;">
@@ -318,13 +336,13 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div style="font-size:12px; color:var(--text-soft); margin-bottom:8px;">
           <span id="zCoords">Click on the map or use the button to set location</span>
         </div>
-        <div style="display:flex; gap:8px; margin-bottom: 12px; flex-wrap:wrap;">
-          <button onclick="seedZoneLocationFromVehicle()" style="font-size:12px; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">Use vehicle location</button>
-          <label style="font-size:12px; color:var(--text); display:flex; align-items:center; gap:5px; padding:6px 10px;">
-            <input id="zNotifyEnter" type="checkbox" checked /> Notify on enter
+        <div style="display:flex; gap:16px; align-items:center; margin-bottom: 12px; flex-wrap:wrap;">
+          <button onclick="seedZoneLocationFromVehicle()" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer; white-space:nowrap;">Use vehicle location</button>
+          <label style="font-size:12px; color:var(--text); display:inline-flex; align-items:center; gap:6px; white-space:nowrap; cursor:pointer;">
+            <input id="zNotifyEnter" type="checkbox" checked style="margin:0;" /> Notify on enter
           </label>
-          <label style="font-size:12px; color:var(--text); display:flex; align-items:center; gap:5px; padding:6px 10px;">
-            <input id="zNotifyExit" type="checkbox" checked /> Notify on exit
+          <label style="font-size:12px; color:var(--text); display:inline-flex; align-items:center; gap:6px; white-space:nowrap; cursor:pointer;">
+            <input id="zNotifyExit" type="checkbox" checked style="margin:0;" /> Notify on exit
           </label>
         </div>
         <div id="zEditorMap" style="height: 240px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
@@ -1783,7 +1801,9 @@ function openZoneEditor(id) {
 
   // Default values
   document.getElementById('zName').value = z ? z.name : '';
-  document.getElementById('zEmoji').value = z ? (z.emoji||'') : '';
+  const initialEmoji = z ? (z.emoji||'') : '';
+  document.getElementById('zEmoji').value = initialEmoji;
+  syncEmojiChips(initialEmoji);
   document.getElementById('zRadius').value = z ? z.radius_m : 150;
   document.getElementById('zRadiusVal').textContent = z ? z.radius_m : 150;
   document.getElementById('zNotifyEnter').checked = z ? !!z.notify_enter : true;
@@ -1813,6 +1833,24 @@ function openZoneEditor(id) {
   }, 50);
 
   card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function pickEmoji(btn) {
+  const e = btn.getAttribute('data-emoji');
+  document.getElementById('zEmoji').value = e;
+  syncEmojiChips(e);
+}
+
+function onEmojiTyped() {
+  const v = document.getElementById('zEmoji').value;
+  syncEmojiChips(v);
+}
+
+function syncEmojiChips(emoji) {
+  document.querySelectorAll('#zEmojiChips .emoji-chip').forEach(c => {
+    if (c.getAttribute('data-emoji') === emoji) c.classList.add('emoji-chip-active');
+    else c.classList.remove('emoji-chip-active');
+  });
 }
 
 function setZoneEditorLocation(lat, lon) {
