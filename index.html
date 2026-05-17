@@ -46,6 +46,15 @@
     .emoji-chip { font-size: 18px; line-height: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: transparent; cursor: pointer; transition: all 0.1s; }
     .emoji-chip:hover { border-color: var(--text); }
     .emoji-chip.emoji-chip-active { background: var(--text); border-color: var(--text); transform: scale(1.05); }
+    .day-chip { width: 36px; height: 32px; font-size: 12px; font-weight: 500; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; }
+    .day-chip:hover { color: var(--text); }
+    .day-chip.day-chip-active { background: var(--text); color: var(--bg); border-color: var(--text); }
+    .toggle-switch { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-switch .slider { position: absolute; cursor: pointer; inset: 0; background-color: var(--border); border-radius: 20px; transition: 0.15s; }
+    .toggle-switch .slider::before { content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px; background-color: white; border-radius: 50%; transition: 0.15s; }
+    .toggle-switch input:checked + .slider { background-color: #16a34a; }
+    .toggle-switch input:checked + .slider::before { transform: translateX(16px); }
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 12px; }
     .card-title { font-size: 11px; color: var(--hint); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-bottom: 12px; }
     .grid4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-bottom: 12px; }
@@ -174,6 +183,7 @@ input:checked + .slider:before { transform: translateX(20px); }
       <button class="tab" onclick="showTab('charge',this)">Charge</button>
       <button class="tab" onclick="showTab('battery',this)">Battery</button>
       <button class="tab" onclick="showTab('geofences',this)">Geofences</button>
+      <button class="tab" onclick="showTab('schedules',this)">Schedules</button>
       <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
       <button class="tab" onclick="showTab('notify',this)">Notifications</button>
       <button class="tab" onclick="showTab('settings',this)">Settings</button>
@@ -349,6 +359,88 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div style="display:flex; gap:8px;">
           <button onclick="saveZone()" style="font-size:13px; padding:8px 16px; border-radius:6px; border:none; background:var(--text); color:var(--bg); cursor:pointer; font-weight:500;">Save</button>
           <button onclick="closeZoneEditor()" style="font-size:13px; padding:8px 16px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-schedules" style="display:none;">
+      <div class="card">
+        <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <span>⏰ Schedules</span>
+          <button onclick="openScheduleEditor()" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:var(--text); color:var(--bg); cursor:pointer; font-weight:500;">+ Add schedule</button>
+        </div>
+        <div id="schedulesList"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div id="scheduleEditorCard" class="card" style="display:none;">
+        <div class="card-title"><span id="scheduleEditorTitle">New schedule</span></div>
+
+        <div style="margin-bottom: 12px;">
+          <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Name</label>
+          <input id="sName" type="text" placeholder="e.g. Weekday warmup" style="width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;" />
+        </div>
+
+        <div style="display:grid; grid-template-columns: 140px 1fr; gap: 10px; margin-bottom: 12px; align-items:end;">
+          <div>
+            <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Time</label>
+            <input id="sTime" type="time" value="07:00" style="width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:14px;" />
+          </div>
+          <div>
+            <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Days <span id="sDaysHint" style="color:var(--hint); font-weight:normal;">(America/Chicago)</span></label>
+            <div id="sDayChips" style="display:flex; gap:4px; flex-wrap:wrap;">
+              <button type="button" class="day-chip" data-dow="0" onclick="toggleDay(0)">S</button>
+              <button type="button" class="day-chip" data-dow="1" onclick="toggleDay(1)">M</button>
+              <button type="button" class="day-chip" data-dow="2" onclick="toggleDay(2)">T</button>
+              <button type="button" class="day-chip" data-dow="3" onclick="toggleDay(3)">W</button>
+              <button type="button" class="day-chip" data-dow="4" onclick="toggleDay(4)">T</button>
+              <button type="button" class="day-chip" data-dow="5" onclick="toggleDay(5)">F</button>
+              <button type="button" class="day-chip" data-dow="6" onclick="toggleDay(6)">S</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom: 14px;">
+          <button type="button" class="chip" onclick="setDaysPreset('weekdays')">Weekdays</button>
+          <button type="button" class="chip" onclick="setDaysPreset('weekends')">Weekends</button>
+          <button type="button" class="chip" onclick="setDaysPreset('every')">Every day</button>
+          <button type="button" class="chip" onclick="setDaysPreset('none')">Clear</button>
+        </div>
+
+        <div style="margin-bottom: 12px;">
+          <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Action</label>
+          <select id="sAction" onchange="onActionChange()" style="width:100%; padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;">
+            <option value="precondition_start">🌡️ Start preconditioning</option>
+            <option value="precondition_stop">❄️ Stop preconditioning</option>
+            <option value="set_charge_limit">🔋 Set charge limit</option>
+            <option value="set_charging_amps">⚡ Set charging amps</option>
+            <option value="charge_start">▶️ Start charging</option>
+            <option value="charge_stop">⏸️ Stop charging</option>
+          </select>
+        </div>
+
+        <div id="sParamSocWrap" style="display:none; margin-bottom: 12px;">
+          <label style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:4px;">
+            <span>Charge limit</span>
+            <span><span id="sSocVal">80</span>%</span>
+          </label>
+          <input id="sSoc" type="range" min="50" max="100" step="1" value="80" oninput="document.getElementById('sSocVal').textContent=this.value" style="width:100%;" />
+        </div>
+
+        <div id="sParamAmpsWrap" style="display:none; margin-bottom: 12px;">
+          <label style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:4px;">
+            <span>Charging amps</span>
+            <span><span id="sAmpsVal">32</span> A</span>
+          </label>
+          <input id="sAmps" type="range" min="5" max="48" step="1" value="32" oninput="document.getElementById('sAmpsVal').textContent=this.value" style="width:100%;" />
+        </div>
+
+        <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text); margin-bottom: 14px; cursor:pointer;">
+          <input id="sEnabled" type="checkbox" checked style="margin:0;" /> Enabled
+        </label>
+
+        <div style="display:flex; gap:8px;">
+          <button onclick="saveSchedule()" style="font-size:13px; padding:8px 16px; border-radius:6px; border:none; background:var(--text); color:var(--bg); cursor:pointer; font-weight:500;">Save</button>
+          <button onclick="closeScheduleEditor()" style="font-size:13px; padding:8px 16px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">Cancel</button>
         </div>
       </div>
     </div>
@@ -920,7 +1012,7 @@ async function showDash() {
 }
 
 function showTab(name, el) {
-  ['monitor','vehicle','charge','battery','geofences','alerts','notify','settings'].forEach(t => {
+  ['monitor','vehicle','charge','battery','geofences','schedules','alerts','notify','settings'].forEach(t => {
     document.getElementById('tab-'+t).style.display = t===name ? 'block' : 'none';
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -929,6 +1021,7 @@ function showTab(name, el) {
   if (name === 'charge') { syncChargeSliders(); loadChargeChart(); loadChargeSessions(); }
   if (name === 'battery') { loadBatteryHealth(); }
   if (name === 'geofences') { loadZones(); }
+  if (name === 'schedules') { loadSchedules(); }
 }
 
 function renderPicker() {
@@ -959,6 +1052,7 @@ function switchVehicle(id) {
   loadDriveSessions();
   loadBatteryHealth();
   loadZones();
+  loadSchedules();
   updateLiveDisplay();
 }
 
@@ -1936,6 +2030,269 @@ async function deleteZone(id) {
   } catch(e) {
     alert('Delete error: ' + e.message);
   }
+}
+
+// ---- Schedules ----
+let schedulesCache = [];
+let editingScheduleId = null;
+let editorDaysMask = 0;
+
+const DAY_LETTERS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const DAY_SHORT = ['S','M','T','W','T','F','S'];
+
+function maskToDayList(mask) {
+  const out = [];
+  for (let i=0;i<7;i++) if (mask & (1<<i)) out.push(DAY_LETTERS[i]);
+  return out;
+}
+function summarizeDays(mask) {
+  if (mask === 0) return 'never';
+  if (mask === 127) return 'every day';
+  if (mask === 62) return 'weekdays';
+  if (mask === 65) return 'weekends';
+  return maskToDayList(mask).map(d => d.slice(0,3)).join(', ');
+}
+function fmt12h(timeLocal) {
+  // "07:00" -> "7:00 AM"
+  const [hStr, mStr] = (timeLocal || '00:00').split(':');
+  let h = parseInt(hStr,10);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  if (h === 0) h = 12;
+  else if (h > 12) h -= 12;
+  return `${h}:${mStr} ${ampm}`;
+}
+function fmtUntil(unixSec) {
+  if (!unixSec) return '';
+  const now = Math.floor(Date.now()/1000);
+  const delta = unixSec - now;
+  if (delta < 0) return 'now';
+  if (delta < 60) return `${delta}s`;
+  const m = Math.floor(delta/60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.floor(m/60), mr = m % 60;
+  if (h < 24) return mr ? `in ${h}h ${mr}m` : `in ${h}h`;
+  const d = Math.floor(h/24);
+  return `in ${d}d`;
+}
+function fmtAction(type, params) {
+  let p = {};
+  if (params) { try { p = (typeof params === 'string') ? JSON.parse(params) : params; } catch {} }
+  switch (type) {
+    case 'precondition_start': return '🌡️ Start preconditioning';
+    case 'precondition_stop':  return '❄️ Stop preconditioning';
+    case 'set_charge_limit':   return `🔋 Set charge limit to ${p.soc || '?'}%`;
+    case 'set_charging_amps':  return `⚡ Set charging amps to ${p.amps || '?'} A`;
+    case 'charge_start':       return '▶️ Start charging';
+    case 'charge_stop':        return '⏸️ Stop charging';
+    default: return type;
+  }
+}
+
+async function loadSchedules() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  const listEl = document.getElementById('schedulesList');
+  if (!listEl) return;
+
+  try {
+    const vinParam = S.vehicleVin ? `&vin=${S.vehicleVin}` : '';
+    const r = await fetch(`${BRIDGE_BASE}/schedules?secret=${secret}${vinParam}`);
+    const d = await r.json();
+    schedulesCache = d.schedules || [];
+
+    if (schedulesCache.length === 0) {
+      listEl.innerHTML = '<div class="empty">No schedules yet. Click "+ Add schedule" to create one.</div>';
+      return;
+    }
+
+    listEl.innerHTML = schedulesCache.map(s => {
+      const status = s.enabled
+        ? (s.next_run_ts ? `<span class="pill pill-ok">Next: ${fmtUntil(s.next_run_ts)}</span>` : '<span class="pill pill-off">No upcoming run</span>')
+        : '<span class="pill pill-off">Disabled</span>';
+      const lastInfo = s.last_run_ts
+        ? `<span style="font-size:11px; color:var(--muted); margin-left:8px;">Last: ${s.last_run_status === 'ok' ? '✅' : '⚠️'} ${fmtUntil(s.last_run_ts).replace('in ','')} ago</span>`
+        : '';
+      return `<div class="row" style="align-items:flex-start; padding: 10px 0;">
+        <div style="flex:1; min-width:0;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <label class="toggle-switch" title="${s.enabled?'Enabled':'Disabled'}">
+              <input type="checkbox" ${s.enabled?'checked':''} onchange="toggleScheduleEnabled(${s.id}, this.checked)" />
+              <span class="slider"></span>
+            </label>
+            <b>${s.name}</b>
+            ${status}
+          </div>
+          <div style="font-size:12px; color:var(--text-soft); margin-top:6px; margin-left:46px;">
+            ${fmt12h(s.time_local)} · ${summarizeDays(s.days_mask)}
+          </div>
+          <div style="font-size:12px; color:var(--text); margin-top:4px; margin-left:46px;">
+            ${fmtAction(s.action_type, s.action_params)}
+            ${lastInfo}
+          </div>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center; flex-shrink:0; margin-top:2px;">
+          <button onclick="runScheduleNow(${s.id})" style="font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">Run now</button>
+          <button onclick="openScheduleEditor(${s.id})" style="font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">Edit</button>
+          <button onclick="deleteSchedule(${s.id})" style="font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid var(--border); background:transparent; color:var(--danger,#E24B4A); cursor:pointer;">Delete</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.log('schedules load failed:', e);
+    listEl.innerHTML = '<div class="empty">Could not load schedules.</div>';
+  }
+}
+
+function openScheduleEditor(id) {
+  editingScheduleId = id || null;
+  const card = document.getElementById('scheduleEditorCard');
+  const title = document.getElementById('scheduleEditorTitle');
+  card.style.display = 'block';
+
+  let s = null;
+  if (id) {
+    s = schedulesCache.find(x => x.id === id);
+    title.textContent = `Edit ${s ? s.name : 'schedule'}`;
+  } else {
+    title.textContent = 'New schedule';
+  }
+
+  document.getElementById('sName').value = s ? s.name : '';
+  document.getElementById('sTime').value = s ? s.time_local : '07:00';
+  editorDaysMask = s ? s.days_mask : 62;  // default weekdays
+  syncDayChips();
+  document.getElementById('sAction').value = s ? s.action_type : 'precondition_start';
+  document.getElementById('sEnabled').checked = s ? !!s.enabled : true;
+
+  // Hydrate params
+  let p = {};
+  if (s && s.action_params) {
+    try { p = (typeof s.action_params === 'string') ? JSON.parse(s.action_params) : s.action_params; } catch {}
+  }
+  document.getElementById('sSoc').value = p.soc || 80;
+  document.getElementById('sSocVal').textContent = p.soc || 80;
+  document.getElementById('sAmps').value = p.amps || 32;
+  document.getElementById('sAmpsVal').textContent = p.amps || 32;
+
+  onActionChange();
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeScheduleEditor() {
+  document.getElementById('scheduleEditorCard').style.display = 'none';
+  editingScheduleId = null;
+}
+
+function toggleDay(dow) {
+  editorDaysMask ^= (1 << dow);
+  syncDayChips();
+}
+
+function syncDayChips() {
+  document.querySelectorAll('#sDayChips .day-chip').forEach(c => {
+    const dow = parseInt(c.getAttribute('data-dow'),10);
+    if (editorDaysMask & (1 << dow)) c.classList.add('day-chip-active');
+    else c.classList.remove('day-chip-active');
+  });
+}
+
+function setDaysPreset(p) {
+  if (p === 'weekdays') editorDaysMask = 62;
+  else if (p === 'weekends') editorDaysMask = 65;
+  else if (p === 'every') editorDaysMask = 127;
+  else editorDaysMask = 0;
+  syncDayChips();
+}
+
+function onActionChange() {
+  const a = document.getElementById('sAction').value;
+  document.getElementById('sParamSocWrap').style.display = (a === 'set_charge_limit') ? 'block' : 'none';
+  document.getElementById('sParamAmpsWrap').style.display = (a === 'set_charging_amps') ? 'block' : 'none';
+}
+
+async function saveSchedule() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) { alert('No proxy secret set'); return; }
+  if (!S.vehicleVin) { alert('No vehicle selected'); return; }
+  const name = document.getElementById('sName').value.trim();
+  if (!name) { alert('Name required'); return; }
+  if (editorDaysMask === 0) { alert('Pick at least one day'); return; }
+
+  const action = document.getElementById('sAction').value;
+  let params = null;
+  if (action === 'set_charge_limit') {
+    params = { soc: parseInt(document.getElementById('sSoc').value, 10) };
+  } else if (action === 'set_charging_amps') {
+    params = { amps: parseInt(document.getElementById('sAmps').value, 10) };
+  }
+
+  const body = {
+    name,
+    vin: S.vehicleVin,
+    time_local: document.getElementById('sTime').value,
+    days_mask: editorDaysMask,
+    action_type: action,
+    action_params: params,
+    enabled: document.getElementById('sEnabled').checked,
+  };
+
+  try {
+    let r;
+    if (editingScheduleId) {
+      r = await fetch(`${BRIDGE_BASE}/schedules?secret=${secret}&id=${editingScheduleId}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+      });
+    } else {
+      r = await fetch(`${BRIDGE_BASE}/schedules?secret=${secret}`, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+      });
+    }
+    if (!r.ok) { const txt = await r.text(); alert('Save failed: ' + r.status + ' ' + txt); return; }
+    closeScheduleEditor();
+    loadSchedules();
+  } catch(e) {
+    alert('Save error: ' + e.message);
+  }
+}
+
+async function deleteSchedule(id) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  const s = schedulesCache.find(x => x.id === id);
+  if (!confirm(`Delete schedule "${s ? s.name : id}"?`)) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/schedules?secret=${secret}&id=${id}`, { method: 'DELETE' });
+    if (!r.ok) { alert('Delete failed: ' + r.status); return; }
+    loadSchedules();
+  } catch(e) { alert('Delete error: ' + e.message); }
+}
+
+async function toggleScheduleEnabled(id, enabled) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/schedules?secret=${secret}&id=${id}`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ enabled })
+    });
+    if (!r.ok) { alert('Toggle failed: ' + r.status); loadSchedules(); return; }
+    loadSchedules();
+  } catch(e) { alert('Toggle error: ' + e.message); }
+}
+
+async function runScheduleNow(id) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  const s = schedulesCache.find(x => x.id === id);
+  if (!confirm(`Run "${s ? s.name : id}" now? This will send the command to your car.`)) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/schedules/run?secret=${secret}&id=${id}`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok || !d.ok) { alert('Run failed: ' + (d.error || r.status)); return; }
+    alert('Queued. Watch for a Pushover notification with the result.');
+    setTimeout(loadSchedules, 2000);
+  } catch(e) { alert('Run error: ' + e.message); }
 }
 
 // Initialize deterrent selector state
