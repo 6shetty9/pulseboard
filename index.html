@@ -819,6 +819,7 @@ async function showDash() {
   if (S.vehicles.length === 0) await fetchVehicles();
   renderPicker();
   loadVehicleCard();
+  loadDriveSessions();
 }
 
 function showTab(name, el) {
@@ -856,6 +857,7 @@ function switchVehicle(id) {
   save();
   renderPicker();
   loadVehicleCard();
+  loadDriveSessions();
   updateLiveDisplay();
 }
 
@@ -1321,6 +1323,15 @@ async function loadDriveSessions() {
   if (!secret || !S.vehicleVin) return;
   const el = document.getElementById('driveSessions');
   if (!el) return;
+
+  // Clear any previously displayed route/map from the prior vehicle
+  document.getElementById('driveMap').style.display = 'none';
+  if (driveRouteLayer && driveMap) {
+    driveMap.removeLayer(driveRouteLayer);
+    driveRouteLayer = null;
+  }
+  driveSessionsCache = [];
+
   try {
     const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${S.vehicleVin}&limit=30`);
     const d = await r.json();
