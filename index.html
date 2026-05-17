@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PulseBoard — Tesla Monitor</title>
@@ -204,6 +206,12 @@ input:checked + .slider:before { transform: translateX(20px); }
           <span id="liveStatus" class="pill pill-off" style="margin-left: 8px; font-size: 11px;">offline</span>
         </div>
         <div id="liveData"><div style="color: var(--text-soft); font-size: 13px;">Waiting for live data...</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🚗 Drive history</div>
+        <div id="driveSummary" style="display:none; margin-bottom: 12px;"></div>
+        <div id="driveMap" style="display:none; height: 280px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
+        <div id="driveSessions"><div class="empty">Loading…</div></div>
       </div>
     </div>
 
@@ -819,7 +827,7 @@ function showTab(name, el) {
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
-  if (name === 'vehicle') { renderPicker(); loadVehicleCard(); }
+  if (name === 'vehicle') { renderPicker(); loadVehicleCard(); loadDriveSessions(); }
   if (name === 'charge') { syncChargeSliders(); loadChargeChart(); loadChargeSessions(); }
 }
 
@@ -1301,6 +1309,119 @@ async function loadChargeSessions() {
       </div>`;
     }).join('');
   } catch(e) { console.log('sessions load failed:', e); }
+}
+
+// ---- Drive history ----
+let driveMap = null;
+let driveRouteLayer = null;
+let driveSessionsCache = [];
+
+async function loadDriveSessions() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !S.vehicleVin) return;
+  const el = document.getElementById('driveSessions');
+  if (!el) return;
+  try {
+    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${S.vehicleVin}&limit=30`);
+    const d = await r.json();
+    if (!d.sessions || d.sessions.length === 0) {
+      el.innerHTML = '<div class="empty">No drives recorded yet. Take the car for a spin and they\'ll show up here.</div>';
+      document.getElementById('driveSummary').style.display = 'none';
+      document.getElementById('driveMap').style.display = 'none';
+      driveSessionsCache = [];
+      return;
+    }
+    driveSessionsCache = d.sessions;
+
+    // Summary stats — last 7 days
+    const now = Math.floor(Date.now() / 1000);
+    const weekAgo = now - 7 * 86400;
+    const recent = d.sessions.filter(s => s.start_ts >= weekAgo);
+    const totalMi = recent.reduce((a, s) => a + (s.distance_mi || 0), 0);
+    const totalKWh = recent.reduce((a, s) => a + (s.energy_used_kwh || 0), 0);
+    const avgEff = totalMi > 0 ? (totalKWh * 1000 / totalMi) : 0;
+    const sumEl = document.getElementById('driveSummary');
+    if (recent.length > 0) {
+      sumEl.style.display = 'grid';
+      sumEl.style.gridTemplateColumns = 'repeat(3, 1fr)';
+      sumEl.style.gap = '10px';
+      sumEl.innerHTML = `
+        <div class="stat"><div class="stat-label">7-day miles</div><div class="stat-val">${totalMi.toFixed(1)}</div><div class="stat-sub">${recent.length} drive${recent.length===1?'':'s'}</div></div>
+        <div class="stat"><div class="stat-label">7-day energy</div><div class="stat-val">${totalKWh.toFixed(1)}</div><div class="stat-sub">kWh</div></div>
+        <div class="stat"><div class="stat-label">Avg efficiency</div><div class="stat-val">${avgEff.toFixed(0)}</div><div class="stat-sub">Wh/mi</div></div>
+      `;
+    } else {
+      sumEl.style.display = 'none';
+    }
+
+    // Session list
+    el.innerHTML = d.sessions.map((s, i) => {
+      const start = new Date(s.start_ts * 1000).toLocaleString();
+      const dur = Math.round(s.duration_s / 60);
+      const hrs = Math.floor(dur / 60), mins = dur % 60;
+      const durStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+      const dist = (s.distance_mi || 0).toFixed(1);
+      const eff = s.efficiency_wh_per_mi > 0 ? `${Math.round(s.efficiency_wh_per_mi)} Wh/mi` : '—';
+      return `<div class="row" style="cursor:pointer;" onclick="showDriveRoute(${i})">
+        <span class="row-label">${start}</span>
+        <span class="row-val">${dist} mi &nbsp;·&nbsp; ${durStr} &nbsp;·&nbsp; ${eff}</span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.log('drive sessions load failed:', e);
+    el.innerHTML = '<div class="empty">Could not load drives.</div>';
+  }
+}
+
+async function showDriveRoute(idx) {
+  const s = driveSessionsCache[idx];
+  if (!s) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !S.vehicleVin) return;
+  const mapEl = document.getElementById('driveMap');
+  mapEl.style.display = 'block';
+
+  // Init map on first use
+  if (!driveMap) {
+    driveMap = L.map('driveMap');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap'
+    }).addTo(driveMap);
+  } else {
+    // Force recompute on first render after display:block
+    setTimeout(() => driveMap.invalidateSize(), 50);
+  }
+
+  try {
+    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving/route?secret=${secret}&vin=${S.vehicleVin}&start_ts=${s.start_ts}&end_ts=${s.end_ts}`);
+    const d = await r.json();
+
+    // Remove previous route
+    if (driveRouteLayer) {
+      driveMap.removeLayer(driveRouteLayer);
+      driveRouteLayer = null;
+    }
+
+    if (!d.points || d.points.length === 0) {
+      mapEl.innerHTML = '<div class="empty" style="padding-top:120px;">No location points for this drive.</div>';
+      return;
+    }
+
+    const latlngs = d.points.map(p => [p.lat, p.lon]);
+    driveRouteLayer = L.layerGroup();
+    L.polyline(latlngs, { color: '#E24B4A', weight: 4, opacity: 0.85 }).addTo(driveRouteLayer);
+    L.marker(latlngs[0], { title: 'Start' }).addTo(driveRouteLayer).bindPopup('Start');
+    L.marker(latlngs[latlngs.length - 1], { title: 'End' }).addTo(driveRouteLayer).bindPopup('End');
+    driveRouteLayer.addTo(driveMap);
+
+    // Fit bounds with a little padding
+    driveMap.fitBounds(L.latLngBounds(latlngs), { padding: [20, 20] });
+    setTimeout(() => driveMap.invalidateSize(), 100);
+  } catch(e) {
+    console.log('drive route load failed:', e);
+    mapEl.innerHTML = '<div class="empty" style="padding-top:120px;">Could not load route.</div>';
+  }
 }
 
 // Initialize deterrent selector state
