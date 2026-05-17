@@ -167,6 +167,7 @@ input:checked + .slider:before { transform: translateX(20px); }
       <button class="tab" onclick="showTab('monitor',this)">Sentry monitor</button>
       <button class="tab" onclick="showTab('charge',this)">Charge</button>
       <button class="tab" onclick="showTab('battery',this)">Battery</button>
+      <button class="tab" onclick="showTab('geofences',this)">Geofences</button>
       <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
       <button class="tab" onclick="showTab('notify',this)">Notifications</button>
       <button class="tab" onclick="showTab('settings',this)">Settings</button>
@@ -281,6 +282,55 @@ input:checked + .slider:before { transform: translateX(20px); }
           Watching this value over months reveals real degradation, separated from day-to-day noise.<br><br>
           To keep the line clean, samples are filtered: SOC must be ≥ 30%, and the car must not have been in Drive/Reverse within ±5 min.
           Daily median is plotted as a solid line; individual filtered samples appear as faint dots.
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-geofences" style="display:none;">
+      <div class="card">
+        <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <span>📍 Geofences</span>
+          <button onclick="openZoneEditor()" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:var(--text); color:var(--bg); cursor:pointer; font-weight:500;">+ Add zone</button>
+        </div>
+        <div id="zonesMap" style="height: 320px; border-radius: var(--radius-sm); margin: 8px 0 12px; border: 1px solid var(--border);"></div>
+        <div id="zonesList"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div id="zoneEditorCard" class="card" style="display:none;">
+        <div class="card-title"><span id="zoneEditorTitle">New zone</span></div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div>
+            <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Name</label>
+            <input id="zName" type="text" placeholder="e.g. Home" style="width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;" />
+          </div>
+          <div>
+            <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Emoji</label>
+            <input id="zEmoji" type="text" placeholder="🏠" maxlength="4" style="width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;" />
+          </div>
+        </div>
+        <div style="margin-bottom: 10px;">
+          <label style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:4px;">
+            <span>Radius</span>
+            <span><span id="zRadiusVal">150</span> m</span>
+          </label>
+          <input id="zRadius" type="range" min="50" max="2000" step="10" value="150" oninput="document.getElementById('zRadiusVal').textContent=this.value; updateZoneEditorMap()" style="width:100%;" />
+        </div>
+        <div style="font-size:12px; color:var(--text-soft); margin-bottom:8px;">
+          <span id="zCoords">Click on the map or use the button to set location</span>
+        </div>
+        <div style="display:flex; gap:8px; margin-bottom: 12px; flex-wrap:wrap;">
+          <button onclick="seedZoneLocationFromVehicle()" style="font-size:12px; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">Use vehicle location</button>
+          <label style="font-size:12px; color:var(--text); display:flex; align-items:center; gap:5px; padding:6px 10px;">
+            <input id="zNotifyEnter" type="checkbox" checked /> Notify on enter
+          </label>
+          <label style="font-size:12px; color:var(--text); display:flex; align-items:center; gap:5px; padding:6px 10px;">
+            <input id="zNotifyExit" type="checkbox" checked /> Notify on exit
+          </label>
+        </div>
+        <div id="zEditorMap" style="height: 240px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
+        <div style="display:flex; gap:8px;">
+          <button onclick="saveZone()" style="font-size:13px; padding:8px 16px; border-radius:6px; border:none; background:var(--text); color:var(--bg); cursor:pointer; font-weight:500;">Save</button>
+          <button onclick="closeZoneEditor()" style="font-size:13px; padding:8px 16px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">Cancel</button>
         </div>
       </div>
     </div>
@@ -852,7 +902,7 @@ async function showDash() {
 }
 
 function showTab(name, el) {
-  ['monitor','vehicle','charge','battery','alerts','notify','settings'].forEach(t => {
+  ['monitor','vehicle','charge','battery','geofences','alerts','notify','settings'].forEach(t => {
     document.getElementById('tab-'+t).style.display = t===name ? 'block' : 'none';
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -860,6 +910,7 @@ function showTab(name, el) {
   if (name === 'vehicle') { renderPicker(); loadVehicleCard(); loadDriveSessions(); }
   if (name === 'charge') { syncChargeSliders(); loadChargeChart(); loadChargeSessions(); }
   if (name === 'battery') { loadBatteryHealth(); }
+  if (name === 'geofences') { loadZones(); }
 }
 
 function renderPicker() {
@@ -889,6 +940,7 @@ function switchVehicle(id) {
   loadVehicleCard();
   loadDriveSessions();
   loadBatteryHealth();
+  loadZones();
   updateLiveDisplay();
 }
 
@@ -1597,6 +1649,254 @@ async function loadBatteryHealth() {
     console.log('battery health load failed:', e);
     empty.style.display = 'block';
     empty.textContent = 'Could not load battery health.';
+  }
+}
+
+// ---- Geofences ----
+let zonesMap = null;
+let zonesMapLayers = [];      // markers + circles for the main map
+let zoneEditorMap = null;
+let zoneEditorMarker = null;
+let zoneEditorCircle = null;
+let zonesCache = [];
+let editingZoneId = null;
+
+const BRIDGE_BASE = 'https://telemetry.6shetty9.com:8444';
+
+function fmtAgo(sinceTs) {
+  if (!sinceTs) return '';
+  const secs = Math.max(1, Math.floor(Date.now()/1000 - sinceTs));
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs/60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m/60), mr = m % 60;
+  if (h < 24) return mr ? `${h}h ${mr}m` : `${h}h`;
+  const d = Math.floor(h/24), hr = h % 24;
+  return hr ? `${d}d ${hr}h` : `${d}d`;
+}
+
+async function loadZones() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  const listEl = document.getElementById('zonesList');
+  if (!listEl) return;
+
+  // Build/recover main map
+  if (!zonesMap) {
+    zonesMap = L.map('zonesMap').setView([32.884117, -97.108326], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '© OpenStreetMap'
+    }).addTo(zonesMap);
+  } else {
+    setTimeout(() => zonesMap.invalidateSize(), 50);
+  }
+
+  // Clear previous layers
+  zonesMapLayers.forEach(l => zonesMap.removeLayer(l));
+  zonesMapLayers = [];
+
+  try {
+    const vinParam = S.vehicleVin ? `&vin=${S.vehicleVin}` : '';
+    const r = await fetch(`${BRIDGE_BASE}/zones?secret=${secret}${vinParam}`);
+    const d = await r.json();
+    zonesCache = d.zones || [];
+
+    if (zonesCache.length === 0) {
+      listEl.innerHTML = '<div class="empty">No geofences yet. Click "+ Add zone" to create one.</div>';
+      return;
+    }
+
+    // Render zones on map
+    const bounds = [];
+    zonesCache.forEach(z => {
+      const insideColor = z.inside ? '#16a34a' : '#94a3b8';
+      const circle = L.circle([z.lat, z.lon], {
+        radius: z.radius_m,
+        color: insideColor,
+        fillColor: insideColor,
+        fillOpacity: 0.15,
+        weight: 2
+      }).addTo(zonesMap);
+      circle.bindPopup(`<b>${z.emoji||''} ${z.name}</b><br>${z.radius_m} m`);
+      zonesMapLayers.push(circle);
+      bounds.push([z.lat, z.lon]);
+    });
+
+    // Add vehicle marker if location known
+    const loc = (pbLiveStateByVin (S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location)(S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location) pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
+    if (loc && loc.latitude && loc.longitude) {
+      const marker = L.circleMarker([loc.latitude, loc.longitude], {
+        radius: 7, color: '#E24B4A', fillColor: '#E24B4A', fillOpacity: 0.9, weight: 2
+      }).addTo(zonesMap);
+      marker.bindPopup(`Vehicle: ${S.vehicleName || S.vehicleVin}`);
+      zonesMapLayers.push(marker);
+      bounds.push([loc.latitude, loc.longitude]);
+    }
+
+    if (bounds.length > 0) {
+      zonesMap.fitBounds(L.latLngBounds(bounds), { padding: [30, 30], maxZoom: 15 });
+    }
+    setTimeout(() => zonesMap.invalidateSize(), 100);
+
+    // Render list
+    listEl.innerHTML = zonesCache.map(z => {
+      let stateBadge = '<span class="pill pill-off">Unknown</span>';
+      if (z.has_state) {
+        const ago = fmtAgo(z.since_ts);
+        stateBadge = z.inside
+          ? `<span class="pill pill-ok">Inside · ${ago}</span>`
+          : `<span class="pill pill-off">Outside · ${ago}</span>`;
+      }
+      const notifyChips = `<span style="font-size:11px; color:var(--muted);">${z.notify_enter?'enter':''}${z.notify_enter&&z.notify_exit?' · ':''}${z.notify_exit?'exit':''}</span>`;
+      return `<div class="row" style="align-items:center;">
+        <span class="row-label">
+          ${z.emoji||'📍'} <b>${z.name}</b>
+          <span style="font-size:11px; color:var(--muted); margin-left:6px;">${z.radius_m}m</span>
+          <span style="margin-left:8px;">${stateBadge}</span>
+        </span>
+        <span class="row-val" style="display:flex; gap:6px; align-items:center;">
+          ${notifyChips}
+          <button onclick="openZoneEditor(${z.id})" style="font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">Edit</button>
+          <button onclick="deleteZone(${z.id})" style="font-size:11px; padding:3px 8px; border-radius:4px; border:1px solid var(--border); background:transparent; color:var(--danger,#E24B4A); cursor:pointer;">Delete</button>
+        </span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.log('zones load failed:', e);
+    listEl.innerHTML = '<div class="empty">Could not load zones.</div>';
+  }
+}
+
+function openZoneEditor(id) {
+  editingZoneId = id || null;
+  const card = document.getElementById('zoneEditorCard');
+  const title = document.getElementById('zoneEditorTitle');
+  card.style.display = 'block';
+
+  let z = null;
+  if (id) {
+    z = zonesCache.find(x => x.id === id);
+    title.textContent = `Edit ${z ? z.name : 'zone'}`;
+  } else {
+    title.textContent = 'New zone';
+  }
+
+  // Default values
+  document.getElementById('zName').value = z ? z.name : '';
+  document.getElementById('zEmoji').value = z ? (z.emoji||'') : '';
+  document.getElementById('zRadius').value = z ? z.radius_m : 150;
+  document.getElementById('zRadiusVal').textContent = z ? z.radius_m : 150;
+  document.getElementById('zNotifyEnter').checked = z ? !!z.notify_enter : true;
+  document.getElementById('zNotifyExit').checked = z ? !!z.notify_exit : true;
+
+  let lat, lon;
+  if (z) { lat = z.lat; lon = z.lon; }
+  else {
+    const loc = (pbLiveStateByVin (S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location)(S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location) pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
+    if (loc && loc.latitude) { lat = loc.latitude; lon = loc.longitude; }
+  }
+
+  // Init editor map
+  setTimeout(() => {
+    if (!zoneEditorMap) {
+      zoneEditorMap = L.map('zEditorMap').setView(lat ? [lat, lon] : [32.884117, -97.108326], 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, attribution: '© OpenStreetMap'
+      }).addTo(zoneEditorMap);
+      zoneEditorMap.on('click', (e) => setZoneEditorLocation(e.latlng.lat, e.latlng.lng));
+    } else {
+      if (lat) zoneEditorMap.setView([lat, lon], 15);
+      zoneEditorMap.invalidateSize();
+    }
+    if (lat && lon) setZoneEditorLocation(lat, lon);
+    else { document.getElementById('zCoords').textContent = 'Click on the map or use the button to set location'; }
+  }, 50);
+
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function setZoneEditorLocation(lat, lon) {
+  if (!zoneEditorMap) return;
+  if (zoneEditorMarker) zoneEditorMap.removeLayer(zoneEditorMarker);
+  if (zoneEditorCircle) zoneEditorMap.removeLayer(zoneEditorCircle);
+  zoneEditorMarker = L.marker([lat, lon], { draggable: true }).addTo(zoneEditorMap);
+  zoneEditorMarker.on('dragend', (e) => {
+    const p = e.target.getLatLng();
+    setZoneEditorLocation(p.lat, p.lng);
+  });
+  const radius = parseInt(document.getElementById('zRadius').value, 10) || 150;
+  zoneEditorCircle = L.circle([lat, lon], { radius, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.15, weight: 2 }).addTo(zoneEditorMap);
+  document.getElementById('zCoords').textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)} · drag pin or click map to refine`;
+}
+
+function updateZoneEditorMap() {
+  if (!zoneEditorMarker || !zoneEditorCircle) return;
+  const p = zoneEditorMarker.getLatLng();
+  const radius = parseInt(document.getElementById('zRadius').value, 10) || 150;
+  zoneEditorMap.removeLayer(zoneEditorCircle);
+  zoneEditorCircle = L.circle([p.lat, p.lng], { radius, color: '#2563eb', fillColor: '#2563eb', fillOpacity: 0.15, weight: 2 }).addTo(zoneEditorMap);
+}
+
+function seedZoneLocationFromVehicle() {
+  const loc = (pbLiveStateByVin (S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location)(S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location) pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
+  if (!loc || !loc.latitude) { alert('No live location yet. Open the Vehicle tab and wait for telemetry.'); return; }
+  zoneEditorMap.setView([loc.latitude, loc.longitude], 16);
+  setZoneEditorLocation(loc.latitude, loc.longitude);
+}
+
+function closeZoneEditor() {
+  document.getElementById('zoneEditorCard').style.display = 'none';
+  editingZoneId = null;
+}
+
+async function saveZone() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) { alert('No proxy secret set'); return; }
+  const name = document.getElementById('zName').value.trim();
+  if (!name) { alert('Name required'); return; }
+  if (!zoneEditorMarker) { alert('Set a location on the map first'); return; }
+
+  const p = zoneEditorMarker.getLatLng();
+  const body = {
+    name,
+    emoji: document.getElementById('zEmoji').value.trim(),
+    lat: p.lat,
+    lon: p.lng,
+    radius_m: parseInt(document.getElementById('zRadius').value, 10) || 150,
+    notify_enter: document.getElementById('zNotifyEnter').checked,
+    notify_exit: document.getElementById('zNotifyExit').checked,
+  };
+
+  try {
+    let r;
+    if (editingZoneId) {
+      r = await fetch(`${BRIDGE_BASE}/zones?secret=${secret}&id=${editingZoneId}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+      });
+    } else {
+      r = await fetch(`${BRIDGE_BASE}/zones?secret=${secret}`, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+      });
+    }
+    if (!r.ok) { alert('Save failed: ' + r.status); return; }
+    closeZoneEditor();
+    loadZones();
+  } catch(e) {
+    alert('Save error: ' + e.message);
+  }
+}
+
+async function deleteZone(id) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  const z = zonesCache.find(x => x.id === id);
+  if (!confirm(`Delete zone "${z ? z.name : id}"?`)) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/zones?secret=${secret}&id=${id}`, { method: 'DELETE' });
+    if (!r.ok) { alert('Delete failed: ' + r.status); return; }
+    loadZones();
+  } catch(e) {
+    alert('Delete error: ' + e.message);
   }
 }
 
