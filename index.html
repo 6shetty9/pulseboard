@@ -245,7 +245,7 @@ input:checked + .slider:before { transform: translateX(20px); }
             <span style="font-size: 13px; color: var(--muted);">Charge limit</span>
             <span id="chargeLimitVal" style="font-size: 16px; font-weight: 600;">—%</span>
           </div>
-          <input type="range" id="chargeLimitSlider" min="50" max="100" step="5" oninput="onChargeLimitInput(this.value)" onchange="onChargeLimitCommit(this.value)" style="width: 100%; accent-color: var(--green);"/>
+          <input type="range" id="chargeLimitSlider" min="50" max="100" step="5" oninput="onChargeLimitInput(this.value)" onchange="onChargeLimitCommit(this.value)" style="width: 100%;"/>
           <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-soft); margin-top: 2px;">
             <span>50%</span><span>75%</span><span>100%</span>
           </div>
@@ -346,13 +346,21 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div style="font-size:12px; color:var(--text-soft); margin-bottom:8px;">
           <span id="zCoords">Click on the map or use the button to set location</span>
         </div>
-        <div style="display:flex; gap:16px; align-items:center; margin-bottom: 12px; flex-wrap:wrap;">
+        <div style="display:flex; gap:20px; align-items:center; margin-bottom: 12px; flex-wrap:wrap;">
           <button onclick="seedZoneLocationFromVehicle()" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer; white-space:nowrap;">Use vehicle location</button>
-          <label style="font-size:12px; color:var(--text); display:inline-flex; align-items:center; gap:6px; white-space:nowrap; cursor:pointer;">
-            <input id="zNotifyEnter" type="checkbox" checked style="margin:0;" /> Notify on enter
+          <label style="font-size:12px; color:var(--text); display:inline-flex; align-items:center; gap:8px; white-space:nowrap; cursor:pointer;">
+            <span class="toggle-switch">
+              <input id="zNotifyEnter" type="checkbox" checked />
+              <span class="slider"></span>
+            </span>
+            Notify on enter
           </label>
-          <label style="font-size:12px; color:var(--text); display:inline-flex; align-items:center; gap:6px; white-space:nowrap; cursor:pointer;">
-            <input id="zNotifyExit" type="checkbox" checked style="margin:0;" /> Notify on exit
+          <label style="font-size:12px; color:var(--text); display:inline-flex; align-items:center; gap:8px; white-space:nowrap; cursor:pointer;">
+            <span class="toggle-switch">
+              <input id="zNotifyExit" type="checkbox" checked />
+              <span class="slider"></span>
+            </span>
+            Notify on exit
           </label>
         </div>
         <div id="zEditorMap" style="height: 240px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
@@ -423,19 +431,23 @@ input:checked + .slider:before { transform: translateX(20px); }
             <span>Charge limit</span>
             <span><span id="sSocVal">80</span>%</span>
           </label>
-          <input id="sSoc" type="range" min="50" max="100" step="1" value="80" oninput="document.getElementById('sSocVal').textContent=this.value" style="width:100%;" />
+          <input id="sSoc" type="range" min="50" max="100" step="1" value="80" oninput="document.getElementById('sSocVal').textContent=this.value; applySocColor(this, document.getElementById('sSocVal'), this.value)" style="width:100%;" />
         </div>
 
         <div id="sParamAmpsWrap" style="display:none; margin-bottom: 12px;">
           <label style="display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:4px;">
             <span>Charging amps</span>
-            <span><span id="sAmpsVal">32</span> A</span>
+            <span><span id="sAmpsVal">40</span> A</span>
           </label>
-          <input id="sAmps" type="range" min="5" max="48" step="1" value="32" oninput="document.getElementById('sAmpsVal').textContent=this.value" style="width:100%;" />
+          <input id="sAmps" type="range" min="5" max="48" step="1" value="40" oninput="document.getElementById('sAmpsVal').textContent=this.value" style="width:100%;" />
         </div>
 
-        <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text); margin-bottom: 14px; cursor:pointer;">
-          <input id="sEnabled" type="checkbox" checked style="margin:0;" /> Enabled
+        <label style="display:inline-flex; align-items:center; gap:8px; font-size:12px; color:var(--text); margin-bottom: 14px; cursor:pointer;">
+          <span class="toggle-switch">
+            <input id="sEnabled" type="checkbox" checked />
+            <span class="slider"></span>
+          </span>
+          Enabled
         </label>
 
         <div style="display:flex; gap:8px;">
@@ -1215,6 +1227,7 @@ let _chargeAmpsTimer = null;
 
 function onChargeLimitInput(val) {
   document.getElementById('chargeLimitVal').textContent = val + '%';
+  applySocColor(document.getElementById('chargeLimitSlider'), document.getElementById('chargeLimitVal'), val);
 }
 function onChargeLimitCommit(val) {
   clearTimeout(_chargeLimitTimer);
@@ -1228,6 +1241,20 @@ function onChargeAmpsCommit(val) {
   _chargeAmpsTimer = setTimeout(() => sendCmd('set_charging_amps', { charging_amps: parseInt(val) }), 300);
 }
 
+// SOC color logic: <20 or >80 red, 20-40 orange, 40-80 green
+function socColor(soc) {
+  const v = parseInt(soc, 10);
+  if (isNaN(v)) return '#94a3b8';
+  if (v < 20 || v > 80) return '#dc2626';   // red
+  if (v < 40) return '#f59e0b';              // orange
+  return '#16a34a';                          // green
+}
+function applySocColor(slider, label, val) {
+  const c = socColor(val);
+  if (slider) slider.style.accentColor = c;
+  if (label) label.style.color = c;
+}
+
 function syncChargeSliders() {
   const state = pbLiveStateByVin[S.vehicleVin];
   if (!state) return;
@@ -1237,6 +1264,7 @@ function syncChargeSliders() {
     const label = document.getElementById('chargeLimitVal');
     if (slider && document.activeElement !== slider) slider.value = limit;
     if (label) label.textContent = limit + '%';
+    applySocColor(slider, label, limit);
   }
   if ('ChargeAmps' in state) {
     const amps = Math.round(state.ChargeAmps);
@@ -2171,8 +2199,9 @@ function openScheduleEditor(id) {
   }
   document.getElementById('sSoc').value = p.soc || 80;
   document.getElementById('sSocVal').textContent = p.soc || 80;
-  document.getElementById('sAmps').value = p.amps || 32;
-  document.getElementById('sAmpsVal').textContent = p.amps || 32;
+  applySocColor(document.getElementById('sSoc'), document.getElementById('sSocVal'), p.soc || 80);
+  document.getElementById('sAmps').value = p.amps || 40;
+  document.getElementById('sAmpsVal').textContent = p.amps || 40;
 
   onActionChange();
   card.scrollIntoView({ behavior: 'smooth', block: 'start' });
