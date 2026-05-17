@@ -1723,7 +1723,7 @@ async function loadZones() {
     });
 
     // Add vehicle marker if location known
-    const loc = (pbLiveStateByVin (S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location)(S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location) pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
+    const loc = (pbLiveStateByVin && pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
     if (loc && loc.latitude && loc.longitude) {
       const marker = L.circleMarker([loc.latitude, loc.longitude], {
         radius: 7, color: '#E24B4A', fillColor: '#E24B4A', fillOpacity: 0.9, weight: 2
@@ -1792,7 +1792,7 @@ function openZoneEditor(id) {
   let lat, lon;
   if (z) { lat = z.lat; lon = z.lon; }
   else {
-    const loc = (pbLiveStateByVin (S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location)(S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location) pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
+    const loc = (pbLiveStateByVin && pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
     if (loc && loc.latitude) { lat = loc.latitude; lon = loc.longitude; }
   }
 
@@ -1838,7 +1838,7 @@ function updateZoneEditorMap() {
 }
 
 function seedZoneLocationFromVehicle() {
-  const loc = (pbLiveStateByVin (S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location)(S.live && S.live[S.vehicleVin] && S.live[S.vehicleVin].Location) pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
+  const loc = (pbLiveStateByVin && pbLiveStateByVin[S.vehicleVin] && pbLiveStateByVin[S.vehicleVin].Location) || null;
   if (!loc || !loc.latitude) { alert('No live location yet. Open the Vehicle tab and wait for telemetry.'); return; }
   zoneEditorMap.setView([loc.latitude, loc.longitude], 16);
   setZoneEditorLocation(loc.latitude, loc.longitude);
