@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <meta charset="UTF-8" />
@@ -36,6 +37,9 @@
     .tabs { display: flex; gap: 2px; margin-bottom: 1.25rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; width: fit-content; }
     .tab { padding: 6px 16px; font-size: 13px; border-radius: 7px; border: none; background: transparent; color: var(--muted); cursor: pointer; font-weight: 500; }
     .tab.active { background: var(--bg); color: var(--text); }
+    .chip { padding: 5px 12px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; font-weight: 500; }
+    .chip:hover { color: var(--text); }
+    .chip.chip-active { background: var(--text); color: var(--bg); border-color: var(--text); }
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 12px; }
     .card-title { font-size: 11px; color: var(--hint); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-bottom: 12px; }
     .grid4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-bottom: 12px; }
@@ -162,6 +166,7 @@ input:checked + .slider:before { transform: translateX(20px); }
       <button class="tab active" onclick="showTab('vehicle',this)">Vehicle</button>
       <button class="tab" onclick="showTab('monitor',this)">Sentry monitor</button>
       <button class="tab" onclick="showTab('charge',this)">Charge</button>
+      <button class="tab" onclick="showTab('battery',this)">Battery</button>
       <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
       <button class="tab" onclick="showTab('notify',this)">Notifications</button>
       <button class="tab" onclick="showTab('settings',this)">Settings</button>
@@ -250,9 +255,33 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div class="card-title">Past charging sessions</div>
         <div id="chargeSessions"><div class="empty">Loading…</div></div>
       </div>
+    </div>
+
+    <div id="tab-battery" style="display:none;">
       <div class="card">
-        <div class="card-title">Battery health</div>
-        <div class="empty">Coming soon — degradation tracking over time.</div>
+        <div class="card-title">🔋 Battery health</div>
+        <div id="batterySummary" style="display:none; margin-bottom: 16px;"></div>
+        <div id="batteryRangeChips" style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+          <button class="chip chip-active" onclick="setBatteryRange(30,this)">30d</button>
+          <button class="chip" onclick="setBatteryRange(90,this)">90d</button>
+          <button class="chip" onclick="setBatteryRange(365,this)">1y</button>
+          <button class="chip" onclick="setBatteryRange(1095,this)">All</button>
+        </div>
+        <div id="batteryChartWrap" style="position: relative; height: 280px;">
+          <canvas id="batteryChart"></canvas>
+        </div>
+        <div id="batteryChartEmpty" style="text-align:center; color: var(--text-soft); font-size: 13px; padding: 80px 0; display:none;">Loading…</div>
+        <div id="batteryNotes" style="margin-top: 12px; font-size: 12px; color: var(--text-soft); line-height: 1.6;"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">How this works</div>
+        <div style="font-size: 13px; color: var(--text-soft); line-height: 1.7;">
+          Normalized rated range = <code style="font-family:inherit; background:var(--bg); padding:1px 5px; border-radius:3px;">EstBatteryRange × 100 / Soc</code>.
+          This estimates what the car's range <em>would</em> be at 100% charge, regardless of current SOC.
+          Watching this value over months reveals real degradation, separated from day-to-day noise.<br><br>
+          To keep the line clean, samples are filtered: SOC must be ≥ 30%, and the car must not have been in Drive/Reverse within ±5 min.
+          Daily median is plotted as a solid line; individual filtered samples appear as faint dots.
+        </div>
       </div>
     </div>
 
@@ -823,13 +852,14 @@ async function showDash() {
 }
 
 function showTab(name, el) {
-  ['monitor','vehicle','charge','alerts','notify','settings'].forEach(t => {
+  ['monitor','vehicle','charge','battery','alerts','notify','settings'].forEach(t => {
     document.getElementById('tab-'+t).style.display = t===name ? 'block' : 'none';
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   if (name === 'vehicle') { renderPicker(); loadVehicleCard(); loadDriveSessions(); }
   if (name === 'charge') { syncChargeSliders(); loadChargeChart(); loadChargeSessions(); }
+  if (name === 'battery') { loadBatteryHealth(); }
 }
 
 function renderPicker() {
@@ -858,6 +888,7 @@ function switchVehicle(id) {
   renderPicker();
   loadVehicleCard();
   loadDriveSessions();
+  loadBatteryHealth();
   updateLiveDisplay();
 }
 
@@ -1432,6 +1463,140 @@ async function showDriveRoute(idx) {
   } catch(e) {
     console.log('drive route load failed:', e);
     mapEl.innerHTML = '<div class="empty" style="padding-top:120px;">Could not load route.</div>';
+  }
+}
+
+// ---- Battery health ----
+let batteryChart = null;
+let batteryRangeDays = 30;
+
+function setBatteryRange(days, el) {
+  batteryRangeDays = days;
+  document.querySelectorAll('#batteryRangeChips .chip').forEach(c => c.classList.remove('chip-active'));
+  if (el) el.classList.add('chip-active');
+  loadBatteryHealth();
+}
+
+async function loadBatteryHealth() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !S.vehicleVin) return;
+  const wrap = document.getElementById('batteryChartWrap');
+  const empty = document.getElementById('batteryChartEmpty');
+  const summaryEl = document.getElementById('batterySummary');
+  const notesEl = document.getElementById('batteryNotes');
+  if (!wrap || !empty || !summaryEl) return;
+
+  empty.style.display = 'block';
+  empty.textContent = 'Loading…';
+  wrap.style.display = 'none';
+  summaryEl.style.display = 'none';
+  if (notesEl) notesEl.textContent = '';
+
+  try {
+    const r = await fetch(`https://telemetry.6shetty9.com:8444/battery/health?secret=${secret}&vin=${S.vehicleVin}&days=${batteryRangeDays}`);
+    const d = await r.json();
+
+    if (!d.samples || d.samples.length === 0) {
+      empty.textContent = 'Not enough data yet. Battery health needs samples while parked and above 30% SOC. Check back in a few days.';
+      return;
+    }
+
+    // Summary header
+    const s = d.summary;
+    const deltaStr = s.delta_mi === 0
+      ? '—'
+      : `${s.delta_mi > 0 ? '+' : ''}${s.delta_mi.toFixed(1)} mi (${s.delta_pct > 0 ? '+' : ''}${s.delta_pct.toFixed(2)}%)`;
+    const deltaColor = s.delta_mi < -1 ? 'var(--danger, #E24B4A)' : 'var(--text)';
+    summaryEl.style.display = 'grid';
+    summaryEl.style.gridTemplateColumns = 'repeat(3, 1fr)';
+    summaryEl.style.gap = '10px';
+    summaryEl.innerHTML = `
+      <div class="stat"><div class="stat-label">Current rated range</div><div class="stat-val">${s.current.toFixed(0)}</div><div class="stat-sub">mi at 100%</div></div>
+      <div class="stat"><div class="stat-label">Since logging started</div><div class="stat-val" style="color:${deltaColor};">${deltaStr}</div><div class="stat-sub">vs ${s.baseline.toFixed(0)} mi baseline</div></div>
+      <div class="stat"><div class="stat-label">Days tracked</div><div class="stat-val">${s.days_tracked}</div><div class="stat-sub">${s.sample_count} filtered samples</div></div>
+    `;
+
+    // Notes
+    if (notesEl) {
+      notesEl.textContent = `${d.samples.length} samples after filtering · ${d.daily.length} day${d.daily.length===1?'':'s'} with data · window: last ${d.days} days`;
+    }
+
+    // Chart
+    empty.style.display = 'none';
+    wrap.style.display = 'block';
+
+    const samplePoints = d.samples.map(p => ({ x: p.ts * 1000, y: p.normalized_range }));
+    const dailyPoints = d.daily.map(p => {
+      // Use midpoint of day (UTC) for x; convert to ms
+      const ms = Date.parse(p.date + 'T12:00:00Z');
+      return { x: ms, y: p.median_range };
+    });
+
+    // Y-axis range: tighten around data so a 1-mi drop is visible
+    const allVals = d.samples.map(p => p.normalized_range);
+    const minVal = Math.min(...allVals);
+    const maxVal = Math.max(...allVals);
+    const padY = Math.max(2, (maxVal - minVal) * 0.3);
+    const yMin = Math.floor(minVal - padY);
+    const yMax = Math.ceil(maxVal + padY);
+
+    const ctx = document.getElementById('batteryChart').getContext('2d');
+    if (batteryChart) batteryChart.destroy();
+    batteryChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [
+          {
+            label: 'Samples',
+            data: samplePoints,
+            showLine: false,
+            pointRadius: 2,
+            pointBackgroundColor: 'rgba(120,120,120,0.35)',
+            pointBorderColor: 'rgba(120,120,120,0.35)',
+            order: 2
+          },
+          {
+            label: 'Daily median',
+            data: dailyPoints,
+            borderColor: '#2563eb',
+            backgroundColor: 'rgba(37, 99, 235, 0.08)',
+            fill: true, tension: 0.2,
+            pointRadius: 3, pointBackgroundColor: '#2563eb',
+            borderWidth: 2,
+            order: 1
+          }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: batteryRangeDays <= 30 ? 'day' : (batteryRangeDays <= 90 ? 'week' : 'month') },
+            ticks: { maxTicksLimit: 8 }
+          },
+          y: { min: yMin, max: yMax, title: { display: true, text: 'mi at 100%' } }
+        },
+        plugins: {
+          legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                if (ctx.dataset.label === 'Samples') {
+                  const raw = d.samples[ctx.dataIndex];
+                  return `${raw.normalized_range} mi @ 100% (raw ${raw.raw_range} mi · SOC ${raw.soc}%)`;
+                }
+                return `Median: ${ctx.parsed.y.toFixed(1)} mi`;
+              }
+            }
+          }
+        }
+      }
+    });
+  } catch(e) {
+    console.log('battery health load failed:', e);
+    empty.style.display = 'block';
+    empty.textContent = 'Could not load battery health.';
   }
 }
 
