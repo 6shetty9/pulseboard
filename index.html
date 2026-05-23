@@ -609,6 +609,34 @@ async function cmdApi(path, method='POST', body=null) {
 // ── Real-time telemetry via WebSocket ─────────────────────
 let pbWs = null;
 let pbLiveStateByVin = {};
+let pbConnectivityByVin = {};   // vin -> {status, ts, lastAliveTs}
+// A car is "live" only if we've seen a connectivity/telemetry signal recently.
+const PB_LIVE_STALE_MS = 5 * 60 * 1000; // 5 min without any signal = consider stale/asleep
+function vinIsLive(vin) {
+  const c = pbConnectivityByVin[vin];
+  if (!c) return null; // unknown — no live signal yet this session
+  if (c.status && c.status.toUpperCase().includes('DISCONNECT')) return false;
+  if (Date.now() - c.ts > PB_LIVE_STALE_MS) return false; // gone quiet → asleep
+  return true;
+}
+// How long has the car been asleep? Returns ms since last alive signal, or null.
+function vinAsleepFor(vin) {
+  const c = pbConnectivityByVin[vin];
+  if (!c || !c.lastAliveTs) return null;
+  if (vinIsLive(vin) === true) return null; // not asleep
+  return Date.now() - c.lastAliveTs;
+}
+function fmtDurationMs(ms) {
+  if (ms == null) return '';
+  let s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600);  s -= h * 3600;
+  const m = Math.floor(s / 60);
+  if (d > 0) return h ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}
 
 function connectTelemetry() {
   const secret = localStorage.getItem('pb_proxy_secret');
@@ -648,9 +676,24 @@ function connectTelemetry() {
 }
 
 async function handleTelemetryEvent(evt) {
+  // Track live connectivity status per VIN (online / offline)
+  if (evt.topic === 'pulseboard_connectivity' && evt.vin && evt.status) {
+    const connected = !evt.status.toUpperCase().includes('DISCONNECT');
+    const prev = pbConnectivityByVin[evt.vin] || {};
+    pbConnectivityByVin[evt.vin] = {
+      status: evt.status,
+      ts: Date.now(),
+      lastAliveTs: connected ? Date.now() : (prev.lastAliveTs || Date.now())
+    };
+    renderPicker();
+    return;
+  }
+
   if (evt.topic === 'pulseboard_V' && evt.fields && evt.vin) {
     if (!pbLiveStateByVin[evt.vin]) pbLiveStateByVin[evt.vin] = {};
     Object.assign(pbLiveStateByVin[evt.vin], evt.fields);
+    // Any telemetry value implies the car is connected right now
+    pbConnectivityByVin[evt.vin] = { status: 'CONNECTED', ts: Date.now(), lastAliveTs: Date.now() };
     updateLiveDisplay();
     
     // Real-time threat detection (only for currently selected vehicle)
@@ -775,7 +818,7 @@ const FIELD_LABELS = {
   TpmsHardWarnings: 'Hard warnings', TpmsSoftWarnings: 'Soft warnings',
   MediaPlaybackStatus: 'Playback', MediaPlaybackSource: 'Source', MediaAudioVolume: 'Volume',
   MediaNowPlayingTitle: 'Title', MediaNowPlayingArtist: 'Artist', MediaNowPlayingAlbum: 'Album',
-  MediaNowPlayingStation: 'Station', MediaNowPlayingDuration: 'Duration (s)', MediaNowPlayingElapsed: 'Elapsed (s)',
+  MediaNowPlayingStation: 'Station', MediaNowPlayingDuration: 'Track length', MediaNowPlayingElapsed: 'Position',
   Version: 'Software version', SoftwareUpdateVersion: 'Update version', SoftwareUpdateDownloadPercentComplete: 'Download (%)'
 };
 
@@ -844,8 +887,22 @@ function formatFieldValue(name, val) {
   if ((name === 'InsideTemp' || name === 'OutsideTemp') && typeof val === 'number') return ((val * 9/5) + 32).toFixed(1);
   if (name.startsWith('TpmsPressure') && typeof val === 'number') return (val * 14.5038).toFixed(1);
   if (name === 'GpsHeading' && typeof val === 'number') return headingToCompass(val);
+  if ((name === 'MediaNowPlayingDuration' || name === 'MediaNowPlayingElapsed') && typeof val === 'number') {
+    return fmtTrackTime(val);
+  }
   if (typeof val === 'number') return Number.isInteger(val) ? String(val) : val.toFixed(1);
   return String(val);
+}
+
+// Tesla streams media duration/elapsed in milliseconds. Format as m:ss (or h:mm:ss).
+function fmtTrackTime(ms) {
+  if (ms == null || isNaN(ms)) return '—';
+  let s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60);   s -= m * 60;
+  const ss = String(s).padStart(2, '0');
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${ss}`;
+  return `${m}:${ss}`;
 }
 
 let pbActiveCategory = 'Battery & Energy';
@@ -912,6 +969,27 @@ function updateLiveDisplay() {
   // Build active category content
   const cat = TELEMETRY_CATEGORIES[pbActiveCategory];
   let rowsHtml = '';
+
+  // Media: show a now-playing progress bar (position / track length)
+  if (pbActiveCategory === 'Media') {
+    const dur = state.MediaNowPlayingDuration;
+    const elapsed = state.MediaNowPlayingElapsed;
+    const title = state.MediaNowPlayingTitle;
+    if (typeof dur === 'number' && dur > 0 && typeof elapsed === 'number') {
+      const pct = Math.max(0, Math.min(100, (elapsed / dur) * 100));
+      rowsHtml += `<div style="padding: 10px 0 16px;">
+        ${title ? `<div style="font-size:13px; font-weight:600; margin-bottom:8px;">${title}</div>` : ''}
+        <div style="height:6px; background:var(--border); border-radius:3px; overflow:hidden;">
+          <div style="height:100%; width:${pct.toFixed(1)}%; background:var(--text); border-radius:3px;"></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-soft); margin-top:5px;">
+          <span>${fmtTrackTime(elapsed)}</span>
+          <span>${fmtTrackTime(dur)}</span>
+        </div>
+      </div>`;
+    }
+  }
+
   for (const f of cat.fields) {
     const label = FIELD_LABELS[f] || f;
     if (f === 'Location' && state.Location && state.Location.latitude) {
@@ -1067,16 +1145,27 @@ function renderPicker() {
   const el = document.getElementById('vehiclePicker');
   if (!el) return;
   if (S.vehicles.length === 0) { el.innerHTML = '<div class="empty">No vehicles found.</div>'; return; }
-  el.innerHTML = S.vehicles.map(v => `
+  el.innerHTML = S.vehicles.map(v => {
+    // Prefer live connectivity over the stale login snapshot
+    const live = vinIsLive(v.vin);
+    let statusLabel, statusOn;
+    if (live === true)       { statusLabel = 'online';  statusOn = true; }
+    else if (live === false) {
+      const asleepMs = vinAsleepFor(v.vin);
+      statusLabel = asleepMs ? `asleep for ${fmtDurationMs(asleepMs)}` : 'asleep';
+      statusOn = false;
+    }
+    else                     { statusLabel = v.state;   statusOn = v.state === 'online'; }
+    return `
     <div class="v-card ${v.id === S.vehicleId ? 'active' : ''}" onclick="switchVehicle('${v.id}')">
       <div class="v-icon" style="background: transparent; width: 60px;">${vehicleImg(v)}</div>
       <div>
         <div class="v-name">${v.name} ${v.id === S.vehicleId ? '<span style="font-size:11px;color:var(--green);">● Active</span>' : ''}</div>
         <div class="v-vin">VIN: ${v.vin}</div>
-        <div class="v-status"><span class="${v.state==='online'?'dot-on':'dot-off'}"></span>${v.state}</div>
+        <div class="v-status"><span class="${statusOn?'dot-on':'dot-off'}"></span>${statusLabel}</div>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 }
 
 function switchVehicle(id) {
@@ -1312,8 +1401,9 @@ async function fireAlert(type, title, desc, severity) {
     S.eventCount++;
     document.getElementById('eventCount').textContent = S.eventCount;
     document.getElementById('lastEventTime').textContent = 'Last: ' + ts.toLocaleTimeString();
-    const msg = `[PulseBoard] ${title}: ${desc} at ${ts.toLocaleTimeString()}`;
-    await Promise.all([sendPushover('PulseBoard Alert', msg), sendSMS(msg), sendEmail('PulseBoard: '+title, msg)]);
+    const vName = S.vehicleName || 'Vehicle';
+    const msg = `[${vName}] ${title}: ${desc} at ${ts.toLocaleTimeString()}`;
+    await Promise.all([sendPushover(`PulseBoard · ${vName}`, msg), sendSMS(msg), sendEmail(`PulseBoard · ${vName}: `+title, msg)]);
   }
   renderFeed(); renderAlertLog();
 }
@@ -1492,6 +1582,12 @@ if (storedCode && Date.now() - storedTs < 30000) {
 setTimeout(() => {
   if (S.token) connectTelemetry();
 }, 500);
+
+// Refresh the vehicle picker periodically so "online → asleep" transitions
+// show up even when no new telemetry is arriving (staleness check).
+setInterval(() => {
+  if (document.getElementById('tab-vehicle').style.display !== 'none') renderPicker();
+}, 60000);
 
 let chargeChart = null;
 
