@@ -702,7 +702,36 @@ async function handleTelemetryEvent(evt) {
       const isLocked = state.Locked === true;
       const isParked = state.Gear === 'ShiftStateP' || !state.Gear;
       const deterrentEnabled = S.fartOnSentry !== false && S.deterrentMode !== 'off';
-      
+
+      // Passive-state alerts (only while monitoring is on, to match old poll behavior).
+      // These fire on state CHANGE so they don't repeat every telemetry tick.
+      if (S.monitoring) {
+        // Unlocked while parked
+        if ('Locked' in evt.fields && isParked) {
+          if (state.Locked === false && state._lastLocked !== false) {
+            await fireAlert('unlock','Vehicle unlocked','Doors are currently unlocked','warn');
+          }
+          state._lastLocked = state.Locked;
+        }
+        // Low battery (cross below 20%)
+        if ('BatteryLevel' in evt.fields && typeof state.BatteryLevel === 'number') {
+          if (state.BatteryLevel < 20 && !state._lowBattAlerted) {
+            state._lowBattAlerted = true;
+            await fireAlert('battery','Low battery',`Battery at ${Math.round(state.BatteryLevel)}%`,'warn');
+          } else if (state.BatteryLevel >= 22) {
+            state._lowBattAlerted = false; // reset with hysteresis so it can re-alert later
+          }
+        }
+        // Sentry turned off unexpectedly (was on, now off) while parked
+        if ('SentryMode' in evt.fields && isParked) {
+          const sentryOff = evt.fields.SentryMode === 'SentryModeStateOff' || evt.fields.SentryMode === 'SentryModeStateIdle';
+          if (sentryOff && state._sentryWasOn === true) {
+            await fireAlert('sentry_off','⚠ Sentry disabled!','Sentry turned off unexpectedly','err');
+          }
+          state._sentryWasOn = !sentryOff;
+        }
+      }
+
       // Tier 1: Sentry detected movement (someone near the car)
       if ('SentryMode' in evt.fields) {
         const aware = evt.fields.SentryMode === 'SentryModeStateAware';
@@ -975,10 +1004,12 @@ function updateLiveDisplay() {
     const dur = state.MediaNowPlayingDuration;
     const elapsed = state.MediaNowPlayingElapsed;
     const title = state.MediaNowPlayingTitle;
-    if (typeof dur === 'number' && dur > 0 && typeof elapsed === 'number') {
+    const playback = state.MediaPlaybackStatus || '';
+    const isPlaying = playback === 'MediaStatusPlaying' || playback === 'Playing';
+    if (isPlaying && typeof dur === 'number' && dur > 0 && typeof elapsed === 'number') {
       const pct = Math.max(0, Math.min(100, (elapsed / dur) * 100));
       rowsHtml += `<div style="padding: 10px 0 16px;">
-        ${title ? `<div style="font-size:13px; font-weight:600; margin-bottom:8px;">${title}</div>` : ''}
+        ${title ? `<div style="font-size:13px; font-weight:600; margin-bottom:8px;">▶ ${title}</div>` : ''}
         <div style="height:6px; background:var(--border); border-radius:3px; overflow:hidden;">
           <div style="height:100%; width:${pct.toFixed(1)}%; background:var(--text); border-radius:3px;"></div>
         </div>
@@ -986,6 +1017,10 @@ function updateLiveDisplay() {
           <span>${fmtTrackTime(elapsed)}</span>
           <span>${fmtTrackTime(dur)}</span>
         </div>
+      </div>`;
+    } else {
+      rowsHtml += `<div style="padding: 14px 0; text-align:center; color:var(--text-soft); font-size:13px;">
+        ${playback === 'MediaStatusPaused' || playback === 'Paused' ? '⏸ Paused' : 'Nothing playing'}
       </div>`;
     }
   }
@@ -1187,6 +1222,16 @@ function switchVehicle(id) {
 async function loadVehicleCard() {
   const el = document.getElementById('vehicleCard');
   if (!S.vehicleId) { el.innerHTML = '<div class="empty">No vehicle selected.</div>'; return; }
+
+  // Prefer live telemetry — avoids a vehicle_data REST call that would wake the car.
+  // Only fall back to REST if telemetry is too sparse to render a useful card.
+  const tel = pbLiveStateByVin[S.vehicleVin];
+  const telRich = tel && 'BatteryLevel' in tel && 'Locked' in tel;
+  if (telRich) {
+    renderVehicleCardFromTelemetry(tel);
+    return;
+  }
+
   el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading vehicle data…</div>';
   try {
     const r = await api(`/vehicles/${S.vehicleId}/vehicle_data?endpoints=charge_state%3Bclimate_state%3Bdrive_state%3Bvehicle_state`);
@@ -1224,6 +1269,45 @@ async function loadVehicleCard() {
       <div class="row"><span class="row-label">Software</span><span class="row-val">${vs.car_version||'—'}</span></div>
     `;
   } catch(e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
+}
+
+// Render the vehicle card purely from cached telemetry (no REST, no wake).
+function renderVehicleCardFromTelemetry(t) {
+  const el = document.getElementById('vehicleCard');
+  if (!el) return;
+  const batt = Math.round(t.BatteryLevel);
+  const bc = batt >= 50 ? 'fill-green' : batt >= 25 ? 'fill-amber' : 'fill-red';
+  const fT = c => (typeof c === 'number') ? Math.round(c * 9/5 + 32) + '°F' : '—';
+  const locked = t.Locked === true;
+  const sentryOn = t.SentryMode && t.SentryMode !== 'SentryModeStateOff' && t.SentryMode !== 'SentryModeStateIdle';
+  const chargeState = t.DetailedChargeState ? String(t.DetailedChargeState).replace('DetailedChargeState','') : '—';
+  const climateOn = t.HvacACEnabled === true || t.CabinOverheatProtectionMode === 'CabinOverheatProtectionModeStateOn';
+  const speed = (typeof t.VehicleSpeed === 'number' && t.VehicleSpeed > 0) ? `${Math.round(t.VehicleSpeed)} mph` : 'Parked';
+  const loc = (t.Location && t.Location.latitude)
+    ? `<a href="https://maps.google.com/?q=${t.Location.latitude},${t.Location.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a>`
+    : '—';
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border);">
+      <div style="width:60px;height:40px;display:flex;align-items:center;justify-content:center;">${vehicleImg(S.vehicles.find(x => x.id === S.vehicleId) || {vin: S.vehicleVin})}</div>
+      <div>
+        <div style="font-size:17px;font-weight:600;">${S.vehicleName}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;"><span class="dot-on"></span>live · ${locked?'Locked':'⚠ Unlocked'} · VIN: ${S.vehicleVin}</div>
+      </div>
+    </div>
+    <div class="card-title">Battery</div>
+    <div style="font-size:24px;font-weight:600;"><span id="vc-batt">${batt}</span>% <span style="font-size:14px;font-weight:400;color:var(--muted);"><span id="vc-range">${t.EstBatteryRange?Math.round(t.EstBatteryRange):'—'}</span> mi range</span></div>
+    <div class="battery-track"><div id="vc-battfill" class="battery-fill ${bc}" style="width:${batt}%"></div></div>
+    <div class="batt-labels"><span>0%</span><span>Charge limit: <span id="vc-limit">${t.ChargeLimitSoc?Math.round(t.ChargeLimitSoc):'—'}</span>%</span><span>100%</span></div>
+    <div style="margin-top:16px;" class="card-title">Details</div>
+    <div class="row"><span class="row-label">Charging status</span><span class="row-val" id="vc-charge">${chargeState}</span></div>
+    <div class="row"><span class="row-label">Inside temp</span><span class="row-val" id="vc-inside">${fT(t.InsideTemp)}</span></div>
+    <div class="row"><span class="row-label">Outside temp</span><span class="row-val" id="vc-outside">${fT(t.OutsideTemp)}</span></div>
+    <div class="row"><span class="row-label">Odometer</span><span class="row-val" id="vc-odo">${t.Odometer?Math.round(t.Odometer).toLocaleString()+' mi':'—'}</span></div>
+    <div class="row"><span class="row-label">Sentry mode</span><span class="row-val" id="vc-sentry">${sentryOn?'✅ Enabled':'❌ Disabled'}</span></div>
+    <div class="row"><span class="row-label">Speed</span><span class="row-val" id="vc-speed">${speed}</span></div>
+    <div class="row"><span class="row-label">Location</span><span class="row-val" id="vc-loc">${loc}</span></div>
+    <div class="row"><span class="row-label">Software</span><span class="row-val">${t.Version||'—'}</span></div>
+  `;
 }
 
 // ── Monitor ──────────────────────────────────────────────
@@ -1281,35 +1365,42 @@ async function wakeVehicle() {
 function toggleMonitor() {
   if (S.monitoring) {
     S.monitoring = false;
-    clearInterval(S.pollTimer); clearInterval(S.countdownTimer);
     document.getElementById('monitorPill').textContent = 'Monitor off';
     document.getElementById('monitorPill').className = 'pill pill-off';
     document.getElementById('monitorToggleBtn').textContent = 'Start monitor';
     document.getElementById('liveIndicator').style.display = 'none';
-    document.getElementById('nextPoll').textContent = '—';
-    document.getElementById('pollStatus').textContent = 'Stopped';
+    const np = document.getElementById('nextPoll'); if (np) np.textContent = '—';
+    const ps = document.getElementById('pollStatus'); if (ps) ps.textContent = 'Stopped';
   } else {
     S.monitoring = true;
     document.getElementById('monitorPill').textContent = 'Live';
     document.getElementById('monitorPill').className = 'pill pill-live';
     document.getElementById('monitorToggleBtn').textContent = 'Stop monitor';
     document.getElementById('liveIndicator').style.display = 'flex';
-    document.getElementById('pollStatus').textContent = 'Active';
-    pollVehicle(); startCountdown();
-    S.pollTimer = setInterval(() => { pollVehicle(); startCountdown(); }, 60000);
+    const ps = document.getElementById('pollStatus'); if (ps) ps.textContent = 'Active (telemetry)';
+    const np = document.getElementById('nextPoll'); if (np) np.textContent = 'live';
+    // Seed the passive-state baselines from current cached telemetry so we don't
+    // false-alert on the first message after enabling.
+    const st = pbLiveStateByVin[S.vehicleVin];
+    if (st) {
+      st._lastLocked = st.Locked;
+      st._sentryWasOn = !(st.SentryMode === 'SentryModeStateOff' || st.SentryMode === 'SentryModeStateIdle');
+      st._lowBattAlerted = false;
+    }
+    document.getElementById('lastPollTime').textContent = new Date().toLocaleTimeString();
   }
 }
 
-function startCountdown() {
-  S.countdown = 60; clearInterval(S.countdownTimer);
-  S.countdownTimer = setInterval(() => { document.getElementById('nextPoll').textContent = (--S.countdown)+'s'; if(S.countdown<=0) S.countdown=60; }, 1000);
-}
+// Monitoring is now driven entirely by the live telemetry stream (handleTelemetryEvent).
+// No 60s vehicle_data polling — that was keeping the car awake. The stream pushes
+// state changes in real time without resetting the car's sleep timer.
+function startCountdown() { /* no-op: telemetry is push-based, no countdown */ }
 
 function pollNow() {
+  // Manual refresh: pull a one-shot vehicle_data snapshot (this WILL wake the car).
   if (!S.monitoring) { alert('Start the monitor first.'); return; }
-  clearInterval(S.pollTimer); clearInterval(S.countdownTimer);
-  pollVehicle(); startCountdown();
-  S.pollTimer = setInterval(() => { pollVehicle(); startCountdown(); }, 60000);
+  if (!confirm('Manual refresh wakes the car to fetch a fresh snapshot. Continue?')) return;
+  loadVehicleCard();
 }
 
 async function sendCmd(cmd, val) {
