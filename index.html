@@ -540,6 +540,15 @@ input:checked + .slider:before { transform: translateX(20px); }
             </select>
           </span>
         </div>
+        <div class="row" style="align-items:center;">
+          <span class="row-label">Out of Park alert <span style="font-size:11px; color:var(--hint);">(24/7, all vehicles)</span></span>
+          <span class="row-val">
+            <label class="toggle-switch">
+              <input id="outOfParkToggle" type="checkbox" onchange="setOutOfParkAlert(this.checked)" />
+              <span class="slider"></span>
+            </label>
+          </span>
+        </div>
         <div class="row"><span class="row-label">Vehicle goes offline</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
         <div class="row"><span class="row-label">Battery below 20%</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
         <div class="row"><span class="row-label">Vehicle unlocked</span><span class="row-val"><span class="pill pill-warn">Warn</span></span></div>
@@ -1173,6 +1182,7 @@ function showTab(name, el) {
   if (name === 'settings') {
     const ri = document.getElementById('kwhRateInput');
     if (ri && S.kwhRate) ri.value = S.kwhRate;
+    loadOutOfParkAlert();
   }
 }
 
@@ -2563,6 +2573,33 @@ async function runScheduleNow(id) {
     alert('Queued. Watch for a Pushover notification with the result.');
     setTimeout(loadSchedules, 2000);
   } catch(e) { alert('Run error: ' + e.message); }
+}
+
+// ---- Out of Park alert (bridge-side, 24/7) ----
+async function setOutOfParkAlert(enabled) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) { alert('No proxy secret set'); return; }
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/settings/out_of_park?secret=${secret}&enabled=${enabled ? 1 : 0}`, { method: 'POST' });
+    if (!r.ok) { alert('Failed to update: ' + r.status); loadOutOfParkAlert(); return; }
+  } catch(e) {
+    alert('Error: ' + e.message);
+    loadOutOfParkAlert();
+  }
+}
+
+async function loadOutOfParkAlert() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  const toggle = document.getElementById('outOfParkToggle');
+  if (!toggle) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/settings/out_of_park?secret=${secret}`);
+    const d = await r.json();
+    toggle.checked = !!d.enabled;
+  } catch(e) {
+    console.log('out_of_park load failed:', e);
+  }
 }
 
 // Initialize deterrent selector state
