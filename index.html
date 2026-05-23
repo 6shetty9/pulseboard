@@ -513,6 +513,18 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div style="margin-top:12px;"><button class="btn" onclick="disconnect()">Disconnect & sign out</button></div>
       </div>
       <div class="card">
+        <div class="card-title">Energy cost</div>
+        <div class="row" style="align-items:center;">
+          <span class="row-label">Home electricity rate</span>
+          <span class="row-val" style="display:flex; align-items:center; gap:4px;">
+            $<input id="kwhRateInput" type="number" min="0" max="2" step="0.01" placeholder="0.15" onchange="saveKwhRate(this.value)" style="width:70px; padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px; text-align:right;" /> /kWh
+          </span>
+        </div>
+        <div style="font-size:11px; color:var(--hint); margin-top:8px; line-height:1.5;">
+          Used to estimate drive cost. Changing this updates the cost shown on all drives (cost is not yet frozen per-trip — that's planned).
+        </div>
+      </div>
+      <div class="card">
         <div class="card-title">Alert thresholds</div>
         <div class="row"><span class="row-label">Sentry turns off unexpectedly</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
         <div class="row"><span class="row-label">Sentry camera event</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
@@ -549,7 +561,7 @@ let S = {
   token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [], vehicleWasAsleep: false, fartOnSentry: true, deterrentMode: 'flash',
   monitoring: false, pollTimer: null, countdownTimer: null, countdown: 60,
   eventCount: 0, sentryOn: false, alerts: [],
-  channels: { pushover: false, sms: false, email: false }, cfg: {}
+  channels: { pushover: false, sms: false, email: false }, cfg: {}, kwhRate: null
 };
 
 // ── Storage ──────────────────────────────────────────────
@@ -557,8 +569,15 @@ function save() {
   localStorage.setItem('pb2', JSON.stringify({
     token: S.token, refresh: S.refresh,
     vehicleId: S.vehicleId, vehicleVin: S.vehicleVin, vehicleName: S.vehicleName,
-    vehicles: S.vehicles, channels: S.channels, cfg: S.cfg
+    vehicles: S.vehicles, channels: S.channels, cfg: S.cfg, kwhRate: S.kwhRate
   }));
+}
+
+function saveKwhRate(val) {
+  const rate = parseFloat(val);
+  S.kwhRate = (isNaN(rate) || rate <= 0) ? null : rate;
+  save();
+  loadDriveSessions();  // refresh costs
 }
 
 function load() {
@@ -1038,6 +1057,10 @@ function showTab(name, el) {
   if (name === 'battery') { loadBatteryHealth(); }
   if (name === 'geofences') { loadZones(); }
   if (name === 'schedules') { loadSchedules(); }
+  if (name === 'settings') {
+    const ri = document.getElementById('kwhRateInput');
+    if (ri && S.kwhRate) ri.value = S.kwhRate;
+  }
 }
 
 function renderPicker() {
@@ -1546,6 +1569,12 @@ let driveRouteLayer = null;
 let driveSessionsCache = [];
 
 async function loadDriveSessions() {
+  // COST NOTE (future work): Drive cost is currently computed live as
+  // energy_used_kwh × S.kwhRate (the CURRENT home rate). This means changing the
+  // rate retroactively changes all displayed drive costs. Planned migration ("option 3"):
+  // move cost to CHARGING sessions instead of drives — cost = kWh added × rate at the
+  // charging session, with rate frozen at charge time and varying by charging location
+  // (home vs away). Build this when implementing the dedicated Cost calculator (#9).
   const secret = localStorage.getItem('pb_proxy_secret');
   if (!secret || !S.vehicleVin) return;
   const el = document.getElementById('driveSessions');
@@ -1581,13 +1610,18 @@ async function loadDriveSessions() {
     const sumEl = document.getElementById('driveSummary');
     if (recent.length > 0) {
       sumEl.style.display = 'grid';
-      sumEl.style.gridTemplateColumns = 'repeat(3, 1fr)';
+      const hasCost = S.kwhRate && totalKWh > 0;
+      sumEl.style.gridTemplateColumns = hasCost ? 'repeat(4, 1fr)' : 'repeat(3, 1fr)';
       sumEl.style.gap = '10px';
-      sumEl.innerHTML = `
+      let html = `
         <div class="stat"><div class="stat-label">7-day miles</div><div class="stat-val">${totalMi.toFixed(1)}</div><div class="stat-sub">${recent.length} drive${recent.length===1?'':'s'}</div></div>
         <div class="stat"><div class="stat-label">7-day energy</div><div class="stat-val">${totalKWh.toFixed(1)}</div><div class="stat-sub">kWh</div></div>
-        <div class="stat"><div class="stat-label">Avg efficiency</div><div class="stat-val">${avgEff.toFixed(0)}</div><div class="stat-sub">Wh/mi</div></div>
-      `;
+        <div class="stat"><div class="stat-label">Avg efficiency</div><div class="stat-val">${avgEff.toFixed(0)}</div><div class="stat-sub">Wh/mi</div></div>`;
+      if (hasCost) {
+        const totalCost = totalKWh * S.kwhRate;
+        html += `<div class="stat"><div class="stat-label">7-day cost</div><div class="stat-val">~$${totalCost.toFixed(2)}</div><div class="stat-sub">@ $${S.kwhRate}/kWh</div></div>`;
+      }
+      sumEl.innerHTML = html;
     } else {
       sumEl.style.display = 'none';
     }
@@ -1600,9 +1634,14 @@ async function loadDriveSessions() {
       const durStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
       const dist = (s.distance_mi || 0).toFixed(1);
       const eff = s.efficiency_wh_per_mi > 0 ? `${Math.round(s.efficiency_wh_per_mi)} Wh/mi` : '—';
+      let costStr = '';
+      if (S.kwhRate && s.energy_used_kwh > 0) {
+        const cost = s.energy_used_kwh * S.kwhRate;
+        costStr = ` &nbsp;·&nbsp; ~$${cost.toFixed(2)}`;
+      }
       return `<div class="row" style="cursor:pointer;" onclick="showDriveRoute(${i})">
         <span class="row-label">${start}</span>
-        <span class="row-val">${dist} mi &nbsp;·&nbsp; ${durStr} &nbsp;·&nbsp; ${eff}</span>
+        <span class="row-val">${dist} mi &nbsp;·&nbsp; ${durStr} &nbsp;·&nbsp; ${eff}${costStr}</span>
       </div>`;
     }).join('');
   } catch(e) {
@@ -1648,9 +1687,20 @@ async function showDriveRoute(idx) {
 
     const latlngs = d.points.map(p => [p.lat, p.lon]);
     driveRouteLayer = L.layerGroup();
-    L.polyline(latlngs, { color: '#E24B4A', weight: 4, opacity: 0.85 }).addTo(driveRouteLayer);
-    L.marker(latlngs[0], { title: 'Start' }).addTo(driveRouteLayer).bindPopup('Start');
-    L.marker(latlngs[latlngs.length - 1], { title: 'End' }).addTo(driveRouteLayer).bindPopup('End');
+    L.polyline(latlngs, { color: '#3b82f6', weight: 4, opacity: 0.8 }).addTo(driveRouteLayer);
+
+    const startIcon = L.divIcon({
+      className: 'route-pin',
+      html: '<div style="width:18px;height:18px;border-radius:50%;background:#16a34a;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div>',
+      iconSize: [18, 18], iconAnchor: [9, 9]
+    });
+    const endIcon = L.divIcon({
+      className: 'route-pin',
+      html: '<div style="width:18px;height:18px;border-radius:50%;background:#dc2626;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div>',
+      iconSize: [18, 18], iconAnchor: [9, 9]
+    });
+    L.marker(latlngs[0], { icon: startIcon, title: 'Start' }).addTo(driveRouteLayer).bindPopup('🟢 Start');
+    L.marker(latlngs[latlngs.length - 1], { icon: endIcon, title: 'End' }).addTo(driveRouteLayer).bindPopup('🔴 End');
     driveRouteLayer.addTo(driveMap);
 
     // Fit bounds with a little padding
