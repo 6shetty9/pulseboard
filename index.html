@@ -232,6 +232,15 @@ input:checked + .slider:before { transform: translateX(20px); }
       </div>
       <div class="card">
         <div class="card-title">🚗 Drive history</div>
+        <div id="driveRangeChips" style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+          <button class="chip" onclick="setDriveRange(1,this)">24h</button>
+          <button class="chip chip-active" onclick="setDriveRange(7,this)">7d</button>
+          <button class="chip" onclick="setDriveRange(30,this)">30d</button>
+          <button class="chip" onclick="setDriveRange(60,this)">60d</button>
+          <button class="chip" onclick="setDriveRange(90,this)">90d</button>
+          <button class="chip" onclick="setDriveRange(365,this)">1y</button>
+          <button class="chip" onclick="setDriveRange(0,this)">All</button>
+        </div>
         <div id="driveSummary" style="display:none; margin-bottom: 12px;"></div>
         <div id="driveMap" style="display:none; height: 280px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
         <div id="driveSessions"><div class="empty">Loading…</div></div>
@@ -694,6 +703,17 @@ let pbWs = null;
 let pbLiveStateByVin = {};
 let pbConnectivityByVin = {};   // vin -> {status, ts, lastAliveTs}
 let pbLastSeenByVin = {};       // vin -> Unix seconds of last telemetry (from bridge)
+// Telemetry booleans sometimes arrive as real booleans, sometimes as the strings
+// "true"/"false" (depending on the protobuf field type). Normalize both.
+function pbBool(v) {
+  if (v === true || v === false) return v;
+  if (typeof v === 'string') {
+    const s = v.toLowerCase().trim();
+    if (s === 'true') return true;
+    if (s === 'false') return false;
+  }
+  return null; // unknown
+}
 let locationMap = null;         // Leaflet map for Motion & Location tab
 let locationMarker = null;
 let locationMapNode = null;     // the DOM node the map is currently bound to
@@ -815,7 +835,7 @@ async function handleTelemetryEvent(evt) {
     // Real-time threat detection (only for currently selected vehicle)
     if (evt.vin === S.vehicleVin) {
       const state = pbLiveStateByVin[evt.vin];
-      const isLocked = state.Locked === true;
+      const isLocked = pbBool(state.Locked) === true;
       const isParked = state.Gear === 'ShiftStateP' || !state.Gear;
       const deterrentEnabled = S.fartOnSentry !== false && S.deterrentMode !== 'off';
 
@@ -824,10 +844,11 @@ async function handleTelemetryEvent(evt) {
       if (S.monitoring) {
         // Unlocked while parked
         if ('Locked' in evt.fields && isParked) {
-          if (state.Locked === false && state._lastLocked !== false) {
+          const lockedNow = pbBool(state.Locked);
+          if (lockedNow === false && state._lastLocked !== false) {
             await fireAlert('unlock','Vehicle unlocked','Doors are currently unlocked','warn');
           }
-          state._lastLocked = state.Locked;
+          state._lastLocked = lockedNow;
         }
         // Low battery (cross below 20%)
         if ('BatteryLevel' in evt.fields && typeof state.BatteryLevel === 'number') {
@@ -1022,11 +1043,14 @@ function formatFieldValue(name, val) {
       if (typeof val === 'string') return val.replace(/([A-Z])/g, ' $1').trim() || 'All closed';
     }
   }
+  if (name === 'Locked') { const b = pbBool(val); return b === true ? 'Locked' : b === false ? 'Unlocked' : String(val); }
   if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+  if (val === 'true') return 'Yes';
+  if (val === 'false') return 'No';
   if (typeof val === 'object' && val !== null && 'latitude' in val) return null; // handled separately
   if (name === 'DoorState' && typeof val === 'object' && val !== null) {
     const labels = { DriverFront: 'Driver front', PassengerFront: 'Passenger front', DriverRear: 'Driver rear', PassengerRear: 'Passenger rear', TrunkFront: 'Frunk', TrunkRear: 'Trunk' };
-    const open = Object.entries(val).filter(([k, v]) => v === true).map(([k]) => labels[k] || k);
+    const open = Object.entries(val).filter(([k, v]) => pbBool(v) === true).map(([k]) => labels[k] || k);
     return open.length ? open.join(', ') : 'All closed';
   }
   if ((name === 'InsideTemp' || name === 'OutsideTemp') && typeof val === 'number') return ((val * 9/5) + 32).toFixed(1);
@@ -1425,7 +1449,7 @@ function renderVehicleCardFromTelemetry(t) {
   const batt = Math.round(t.BatteryLevel);
   const bc = batt >= 50 ? 'fill-green' : batt >= 25 ? 'fill-amber' : 'fill-red';
   const fT = c => (typeof c === 'number') ? Math.round(c * 9/5 + 32) + '°F' : '—';
-  const locked = t.Locked === true;
+  const locked = pbBool(t.Locked) === true;
   const sentryOn = t.SentryMode && t.SentryMode !== 'SentryModeStateOff' && t.SentryMode !== 'SentryModeStateIdle';
   const chargeState = t.DetailedChargeState ? String(t.DetailedChargeState).replace('DetailedChargeState','') : '—';
   const climateOn = t.HvacACEnabled === true || t.CabinOverheatProtectionMode === 'CabinOverheatProtectionModeStateOn';
@@ -1719,7 +1743,7 @@ function toggleSentry() {
 function toggleLock() {
   // Check current locked state from live telemetry, fallback to UI display
   const state = pbLiveStateByVin[S.vehicleVin] || {};
-  const isLocked = state.Locked === true;
+  const isLocked = pbBool(state.Locked) !== false; // treat unknown as locked
   sendCmd(isLocked ? 'door_unlock' : 'door_lock');
 }
 
@@ -1766,7 +1790,7 @@ function updateControlButtons() {
   if (lockBtn) {
     let isLocked;
     if ('Locked' in state) {
-      isLocked = state.Locked === true;
+      isLocked = pbBool(state.Locked) !== false; // string or bool; default locked unless explicitly false
     } else {
       isLocked = S.lastLocked !== false; // default to locked if unknown
     }
@@ -1900,6 +1924,16 @@ async function loadChargeSessions() {
 let driveMap = null;
 let driveRouteLayer = null;
 let driveSessionsCache = [];
+let driveRangeDays = 7; // 0 = all time
+
+const DRIVE_RANGE_LABELS = { 1: '24h', 7: '7-day', 30: '30-day', 60: '60-day', 90: '90-day', 365: '1-year', 0: 'All-time' };
+
+function setDriveRange(days, el) {
+  driveRangeDays = days;
+  document.querySelectorAll('#driveRangeChips .chip').forEach(c => c.classList.remove('chip-active'));
+  if (el) el.classList.add('chip-active');
+  loadDriveSessions();
+}
 
 async function loadDriveSessions() {
   // COST NOTE (future work): Drive cost is currently computed live as
@@ -1922,45 +1956,46 @@ async function loadDriveSessions() {
   driveSessionsCache = [];
 
   try {
-    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${S.vehicleVin}&limit=30`);
+    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${S.vehicleVin}&limit=500`);
     const d = await r.json();
-    if (!d.sessions || d.sessions.length === 0) {
-      el.innerHTML = '<div class="empty">No drives recorded yet. Take the car for a spin and they\'ll show up here.</div>';
+    const allSessions = d.sessions || [];
+
+    // Filter to the selected period (0 = all time)
+    const now = Math.floor(Date.now() / 1000);
+    const cutoff = driveRangeDays > 0 ? now - driveRangeDays * 86400 : 0;
+    const sessions = allSessions.filter(s => s.start_ts >= cutoff);
+    const rangeLabel = DRIVE_RANGE_LABELS[driveRangeDays] || `${driveRangeDays}-day`;
+
+    if (sessions.length === 0) {
+      el.innerHTML = `<div class="empty">No drives in the ${rangeLabel.toLowerCase()} period.${allSessions.length ? ' Try a wider range.' : ' Take the car for a spin and they\'ll show up here.'}</div>`;
       document.getElementById('driveSummary').style.display = 'none';
       document.getElementById('driveMap').style.display = 'none';
       driveSessionsCache = [];
       return;
     }
-    driveSessionsCache = d.sessions;
+    driveSessionsCache = sessions;
 
-    // Summary stats — last 7 days
-    const now = Math.floor(Date.now() / 1000);
-    const weekAgo = now - 7 * 86400;
-    const recent = d.sessions.filter(s => s.start_ts >= weekAgo);
-    const totalMi = recent.reduce((a, s) => a + (s.distance_mi || 0), 0);
-    const totalKWh = recent.reduce((a, s) => a + (s.energy_used_kwh || 0), 0);
+    // Summary stats for the selected period
+    const totalMi = sessions.reduce((a, s) => a + (s.distance_mi || 0), 0);
+    const totalKWh = sessions.reduce((a, s) => a + (s.energy_used_kwh || 0), 0);
     const avgEff = totalMi > 0 ? (totalKWh * 1000 / totalMi) : 0;
     const sumEl = document.getElementById('driveSummary');
-    if (recent.length > 0) {
-      sumEl.style.display = 'grid';
-      const hasCost = S.kwhRate && totalKWh > 0;
-      sumEl.style.gridTemplateColumns = hasCost ? 'repeat(4, 1fr)' : 'repeat(3, 1fr)';
-      sumEl.style.gap = '10px';
-      let html = `
-        <div class="stat"><div class="stat-label">7-day miles</div><div class="stat-val">${totalMi.toFixed(1)}</div><div class="stat-sub">${recent.length} drive${recent.length===1?'':'s'}</div></div>
-        <div class="stat"><div class="stat-label">7-day energy</div><div class="stat-val">${totalKWh.toFixed(1)}</div><div class="stat-sub">kWh</div></div>
-        <div class="stat"><div class="stat-label">Avg efficiency</div><div class="stat-val">${avgEff.toFixed(0)}</div><div class="stat-sub">Wh/mi</div></div>`;
-      if (hasCost) {
-        const totalCost = totalKWh * S.kwhRate;
-        html += `<div class="stat"><div class="stat-label">7-day cost</div><div class="stat-val">~$${totalCost.toFixed(2)}</div><div class="stat-sub">@ $${S.kwhRate}/kWh</div></div>`;
-      }
-      sumEl.innerHTML = html;
-    } else {
-      sumEl.style.display = 'none';
+    sumEl.style.display = 'grid';
+    const hasCost = S.kwhRate && totalKWh > 0;
+    sumEl.style.gridTemplateColumns = hasCost ? 'repeat(4, 1fr)' : 'repeat(3, 1fr)';
+    sumEl.style.gap = '10px';
+    let html = `
+      <div class="stat"><div class="stat-label">${rangeLabel} miles</div><div class="stat-val">${totalMi.toFixed(1)}</div><div class="stat-sub">${sessions.length} drive${sessions.length===1?'':'s'}</div></div>
+      <div class="stat"><div class="stat-label">${rangeLabel} energy</div><div class="stat-val">${totalKWh.toFixed(1)}</div><div class="stat-sub">kWh</div></div>
+      <div class="stat"><div class="stat-label">Avg efficiency</div><div class="stat-val">${avgEff.toFixed(0)}</div><div class="stat-sub">Wh/mi</div></div>`;
+    if (hasCost) {
+      const totalCost = totalKWh * S.kwhRate;
+      html += `<div class="stat"><div class="stat-label">${rangeLabel} cost</div><div class="stat-val">~$${totalCost.toFixed(2)}</div><div class="stat-sub">@ $${S.kwhRate}/kWh</div></div>`;
     }
+    sumEl.innerHTML = html;
 
-    // Session list
-    el.innerHTML = d.sessions.map((s, i) => {
+    // Session list (filtered)
+    el.innerHTML = sessions.map((s, i) => {
       const start = new Date(s.start_ts * 1000).toLocaleString();
       const dur = Math.round(s.duration_s / 60);
       const hrs = Math.floor(dur / 60), mins = dur % 60;
