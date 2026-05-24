@@ -347,6 +347,14 @@ input:checked + .slider:before { transform: translateX(20px); }
           </label>
           <input id="zRadius" type="range" min="50" max="2000" step="10" value="150" oninput="document.getElementById('zRadiusVal').textContent=this.value; updateZoneEditorMap()" style="width:100%;" />
         </div>
+        <div style="margin-bottom: 10px;">
+          <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Search address or place</label>
+          <div style="display:flex; gap:8px;">
+            <input id="zSearch" type="text" placeholder="e.g. Buc-ee's, Temple TX" onkeydown="if(event.key==='Enter'){event.preventDefault();searchZoneAddress();}" style="flex:1; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;" />
+            <button onclick="searchZoneAddress()" style="font-size:12px; padding:6px 14px; border-radius:6px; border:1px solid var(--border); background:var(--text); color:var(--bg); cursor:pointer; white-space:nowrap;">Search</button>
+          </div>
+          <div id="zSearchResults" style="margin-top:6px;"></div>
+        </div>
         <div style="font-size:12px; color:var(--text-soft); margin-bottom:8px;">
           <span id="zCoords">Click on the map or use the button to set location</span>
         </div>
@@ -2233,6 +2241,8 @@ function openZoneEditor(id) {
   }
 
   // Default values
+  const zsearch = document.getElementById('zSearch'); if (zsearch) zsearch.value = '';
+  const zsr = document.getElementById('zSearchResults'); if (zsr) zsr.innerHTML = '';
   document.getElementById('zName').value = z ? z.name : '';
   const initialEmoji = z ? (z.emoji||'') : '';
   document.getElementById('zEmoji').value = initialEmoji;
@@ -2313,6 +2323,43 @@ function seedZoneLocationFromVehicle() {
   if (!loc || !loc.latitude) { alert('No live location yet. Open the Vehicle tab and wait for telemetry.'); return; }
   zoneEditorMap.setView([loc.latitude, loc.longitude], 16);
   setZoneEditorLocation(loc.latitude, loc.longitude);
+}
+
+async function searchZoneAddress() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) { alert('No proxy secret set'); return; }
+  const q = document.getElementById('zSearch').value.trim();
+  const resultsEl = document.getElementById('zSearchResults');
+  if (!q) { resultsEl.innerHTML = ''; return; }
+  resultsEl.innerHTML = '<div style="font-size:12px; color:var(--text-soft); padding:4px 0;">Searching…</div>';
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/geocode?secret=${secret}&q=${encodeURIComponent(q)}`);
+    if (!r.ok) { resultsEl.innerHTML = '<div style="font-size:12px; color:var(--danger,#E24B4A); padding:4px 0;">Search failed.</div>'; return; }
+    const d = await r.json();
+    if (!d.results || d.results.length === 0) {
+      resultsEl.innerHTML = '<div style="font-size:12px; color:var(--text-soft); padding:4px 0;">No matches found.</div>';
+      return;
+    }
+    resultsEl.innerHTML = d.results.map((res, i) =>
+      `<div onclick="pickSearchResult(${i})" style="font-size:12px; padding:7px 10px; border:1px solid var(--border); border-radius:6px; margin-top:4px; cursor:pointer; background:var(--bg);" onmouseover="this.style.borderColor='var(--text)'" onmouseout="this.style.borderColor='var(--border)'">${res.name}</div>`
+    ).join('');
+    window._zSearchResults = d.results;
+  } catch(e) {
+    resultsEl.innerHTML = '<div style="font-size:12px; color:var(--danger,#E24B4A); padding:4px 0;">Search error: '+e.message+'</div>';
+  }
+}
+
+function pickSearchResult(idx) {
+  const res = (window._zSearchResults || [])[idx];
+  if (!res) return;
+  zoneEditorMap.setView([res.lat, res.lon], 16);
+  setZoneEditorLocation(res.lat, res.lon);
+  // Pre-fill the zone name with the first part of the place name if name is empty
+  const nameEl = document.getElementById('zName');
+  if (nameEl && !nameEl.value.trim()) {
+    nameEl.value = res.name.split(',')[0];
+  }
+  document.getElementById('zSearchResults').innerHTML = '';
 }
 
 function closeZoneEditor() {
