@@ -620,6 +620,9 @@ let pbWs = null;
 let pbLiveStateByVin = {};
 let pbConnectivityByVin = {};   // vin -> {status, ts, lastAliveTs}
 let pbLastSeenByVin = {};       // vin -> Unix seconds of last telemetry (from bridge)
+let locationMap = null;         // Leaflet map for Motion & Location tab
+let locationMarker = null;
+let locationMapNode = null;     // the DOM node the map is currently bound to
 
 // Fetch the bridge's authoritative last-telemetry timestamp for all vehicles.
 // This is accurate across browser restarts (the bridge runs 24/7).
@@ -1068,16 +1071,14 @@ function updateLiveDisplay() {
     const label = FIELD_LABELS[f] || f;
     if (f === 'Location' && state.Location && state.Location.latitude) {
       const { latitude, longitude } = state.Location;
-      const bbox = `${longitude-0.005},${latitude-0.003},${longitude+0.005},${latitude+0.003}`;
-      const mapUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${latitude},${longitude}`;
-      const linkUrl = `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=16/${latitude}/${longitude}`;
+      const heading = (typeof state.GpsHeading === 'number') ? headingToCompass(state.GpsHeading) : '';
       rowsHtml += `<div class="row" style="flex-direction: column; align-items: stretch; padding: 12px 0;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
           <span class="row-label">${label}</span>
-          <span class="row-val" style="font-size: 12px; color: var(--text-soft);">${latitude.toFixed(4)}, ${longitude.toFixed(4)}</span>
+          <span class="row-val" style="font-size: 12px; color: var(--text-soft);">${latitude.toFixed(4)}, ${longitude.toFixed(4)}${heading ? ' · ' + heading : ''}</span>
         </div>
-        <iframe src="${mapUrl}" style="width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 8px;" loading="lazy"></iframe>
-        <a href="${linkUrl}" target="_blank" style="font-size: 12px; margin-top: 6px; color: var(--text-soft);">Open in OpenStreetMap ↗</a>
+        <div id="locationMap" style="width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 8px;"></div>
+        <a href="https://maps.google.com/?q=${latitude},${longitude}" target="_blank" style="font-size: 12px; margin-top: 6px; color: var(--text-soft);">Open in Google Maps ↗</a>
       </div>`;
     } else if (f in state) {
       const val = formatFieldValue(f, state[f]);
@@ -1088,6 +1089,35 @@ function updateLiveDisplay() {
   }
   
   el.innerHTML = tabsHtml + rowsHtml;
+
+  // Render the live location on a Leaflet map (Motion & Location tab only).
+  // The innerHTML rebuild above replaces the #locationMap node, so the existing
+  // map instance is orphaned. We rebuild only when the node changed; otherwise we
+  // just move the marker so it doesn't flicker on every telemetry tick.
+  if (pbActiveCategory === 'Motion & Location' && state.Location && state.Location.latitude) {
+    const { latitude, longitude } = state.Location;
+    const mapDiv = document.getElementById('locationMap');
+    if (mapDiv && window.L) {
+      if (locationMap && locationMapNode === mapDiv) {
+        // Same node still mounted — just update marker + recenter (no flicker)
+        locationMarker.setLatLng([latitude, longitude]);
+        locationMap.panTo([latitude, longitude], { animate: true });
+      } else {
+        if (locationMap) { try { locationMap.remove(); } catch(e) {} }
+        locationMap = L.map(mapDiv, { zoomControl: true, attributionControl: false }).setView([latitude, longitude], 15);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(locationMap);
+        locationMarker = L.circleMarker([latitude, longitude], {
+          radius: 8, color: '#E24B4A', fillColor: '#E24B4A', fillOpacity: 0.9, weight: 2
+        }).addTo(locationMap);
+        locationMapNode = mapDiv;
+        setTimeout(() => { if (locationMap) locationMap.invalidateSize(); }, 50);
+      }
+    }
+  } else if (pbActiveCategory !== 'Motion & Location' && locationMap) {
+    // Left the tab — drop the map so a stale node reference doesn't linger
+    try { locationMap.remove(); } catch(e) {}
+    locationMap = null; locationMapNode = null;
+  }
 }
 
 async function api(path, method='GET', body=null) {
