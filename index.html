@@ -638,6 +638,13 @@ async function refreshLastSeen() {
 // A car is "live" only if we've seen a connectivity/telemetry signal recently.
 const PB_LIVE_STALE_MS = 5 * 60 * 1000; // 5 min without any signal = consider stale/asleep
 function vinIsLive(vin) {
+  // The bridge's last_seen_ts is authoritative — it reflects real telemetry
+  // activity 24/7 and isn't fooled by the cached snapshot sent on WS connect.
+  const bridgeTs = pbLastSeenByVin[vin]; // Unix seconds
+  if (bridgeTs) {
+    return (Date.now() - bridgeTs * 1000) <= PB_LIVE_STALE_MS;
+  }
+  // Fallback: no bridge value yet — use session connectivity.
   const c = pbConnectivityByVin[vin];
   if (!c) return null; // unknown — no live signal yet this session
   if (c.status && c.status.toUpperCase().includes('DISCONNECT')) return false;
