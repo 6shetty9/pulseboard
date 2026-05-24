@@ -182,6 +182,7 @@ input:checked + .slider:before { transform: translateX(20px); }
       <button class="tab" onclick="showTab('monitor',this)">Sentry monitor</button>
       <button class="tab" onclick="showTab('charge',this)">Charge</button>
       <button class="tab" onclick="showTab('battery',this)">Battery</button>
+      <button class="tab" onclick="showTab('charts',this)">Charts</button>
       <button class="tab" onclick="showTab('geofences',this)">Geofences</button>
       <button class="tab" onclick="showTab('schedules',this)">Schedules</button>
       <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
@@ -302,6 +303,71 @@ input:checked + .slider:before { transform: translateX(20px); }
           Watching this value over months reveals real degradation, separated from day-to-day noise.<br><br>
           To keep the line clean, samples are filtered: SOC must be ≥ 30%, and the car must not have been in Drive/Reverse within ±5 min.
           Daily median is plotted as a solid line; individual filtered samples appear as faint dots.
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-charts" style="display:none;">
+      <div class="card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+          <!-- Sub-tab selector -->
+          <div id="chartSubtabs" style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button class="chip chip-active" onclick="setChartView('efficiency',this)">⚡ Efficiency</button>
+            <button class="chip" onclick="setChartView('mileage',this)">🛣 Mileage</button>
+            <button class="chip" onclick="setChartView('charging',this)">🔌 Charging</button>
+          </div>
+          <!-- Car selector: M3L / MYP / Both -->
+          <div id="chartCarToggle" style="display:flex; gap:6px;"></div>
+        </div>
+        <div id="chartRangeChips" style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+          <button class="chip" onclick="setChartRange(30,this)">30d</button>
+          <button class="chip chip-active" onclick="setChartRange(90,this)">90d</button>
+          <button class="chip" onclick="setChartRange(365,this)">1y</button>
+          <button class="chip" onclick="setChartRange(1095,this)">All</button>
+        </div>
+      </div>
+
+      <!-- ===== Efficiency view ===== -->
+      <div id="chartview-efficiency">
+        <div class="card">
+          <div class="card-title">⚡ Drive efficiency</div>
+          <div id="effSummary" style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px;"></div>
+          <div id="effScatterWrap" style="position: relative; height: 260px; margin-bottom: 8px;">
+            <canvas id="effScatter"></canvas>
+          </div>
+          <div id="effScatterEmpty" style="text-align:center; color: var(--text-soft); font-size: 13px; padding: 70px 0; display:none;">Loading…</div>
+        </div>
+        <div class="card">
+          <div class="card-title">🌡 Temperature → efficiency</div>
+          <div id="effBuckets" style="font-size: 13px;"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Recent drives</div>
+          <div id="effDrives" style="font-size: 13px;"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">How this works</div>
+          <div style="font-size: 13px; color: var(--text-soft); line-height: 1.7;">
+            Efficiency % = rated consumption ÷ actual consumption × 100. Above 100% means you beat the car's rated Wh/mi; below means worse (cold, heat/AC, high speeds, or short trips all hurt).
+            Drives are grouped into 10°F buckets using the car's own <code style="font-family:inherit; background:var(--bg); padding:1px 5px; border-radius:3px;">OutsideTemp</code> sensor.
+            Energy is derived from SOC change, so very short drives are noisy — buckets get more reliable as you log more miles.
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Mileage view (placeholder) ===== -->
+      <div id="chartview-mileage" style="display:none;">
+        <div class="card">
+          <div class="card-title">🛣 Mileage stats</div>
+          <div style="color:var(--text-soft); font-size:13px; padding:20px 0; text-align:center;">Coming soon — distance over time, daily/weekly/monthly totals.</div>
+        </div>
+      </div>
+
+      <!-- ===== Charging view (placeholder) ===== -->
+      <div id="chartview-charging" style="display:none;">
+        <div class="card">
+          <div class="card-title">🔌 Charging stats</div>
+          <div style="color:var(--text-soft); font-size:13px; padding:20px 0; text-align:center;">Coming soon — energy added, session history, cost per session.</div>
         </div>
       </div>
     </div>
@@ -1238,7 +1304,7 @@ async function showDash() {
 }
 
 function showTab(name, el) {
-  ['monitor','vehicle','charge','battery','geofences','schedules','alerts','notify','settings'].forEach(t => {
+  ['monitor','vehicle','charge','battery','charts','geofences','schedules','alerts','notify','settings'].forEach(t => {
     document.getElementById('tab-'+t).style.display = t===name ? 'block' : 'none';
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1246,6 +1312,7 @@ function showTab(name, el) {
   if (name === 'vehicle') { renderPicker(); loadVehicleCard(); loadDriveSessions(); }
   if (name === 'charge') { syncChargeSliders(); loadChargeChart(); loadChargeSessions(); }
   if (name === 'battery') { loadBatteryHealth(); }
+  if (name === 'charts') { renderChartCarToggle(); loadChartView(); }
   if (name === 'geofences') { loadZones(); }
   if (name === 'schedules') { loadSchedules(); }
   if (name === 'settings') {
@@ -1293,6 +1360,7 @@ function switchVehicle(id) {
   loadVehicleCard();
   loadDriveSessions();
   loadBatteryHealth();
+  if (document.getElementById('tab-charts').style.display !== 'none') { renderChartCarToggle(); loadChartView(); }
   loadZones();
   loadSchedules();
   updateLiveDisplay();
@@ -1980,6 +2048,222 @@ async function showDriveRoute(idx) {
 // ---- Battery health ----
 let batteryChart = null;
 let batteryRangeDays = 30;
+
+// ---- Charts tab (Efficiency / Mileage / Charging) ----
+let effScatterChart = null;
+let chartView = 'efficiency';
+let chartRangeDays = 90;
+let chartCar = 'active'; // 'active' resolves to the global picker; or a specific VIN; or 'both'
+
+// Car colors for overlays
+const CAR_COLORS = {
+  '5YJ3E1EBXRF816176': { solid: '#3B82F6', soft: 'rgba(59,130,246,.75)', name: 'M3L' }, // blue M3L
+  '7SAYGDET9TA621106': { solid: '#E24B4A', soft: 'rgba(226,75,74,.75)', name: 'MYP' },  // red MYP
+};
+function carColor(vin) { return CAR_COLORS[vin] || { solid: '#888', soft: 'rgba(136,136,136,.7)', name: vin.slice(-4) }; }
+
+// Which VINs does the current selection resolve to?
+function chartSelectedVins() {
+  if (chartCar === 'both') return S.vehicles.map(v => v.vin);
+  if (chartCar === 'active') return S.vehicleVin ? [S.vehicleVin] : [];
+  return [chartCar]; // a specific VIN
+}
+
+function renderChartCarToggle() {
+  const el = document.getElementById('chartCarToggle');
+  if (!el) return;
+  // Default the selection to the active vehicle on first open
+  if (chartCar === 'active' && S.vehicleVin) chartCar = S.vehicleVin;
+  const btn = (label, val) => {
+    const active = (chartCar === val);
+    return `<button class="chip ${active?'chip-active':''}" onclick="setChartCar('${val}')">${label}</button>`;
+  };
+  let html = '';
+  S.vehicles.forEach(v => { html += btn(v.name.replace('Tesla ',''), v.vin); });
+  if (S.vehicles.length > 1) html += btn('Both', 'both');
+  el.innerHTML = html;
+}
+
+function setChartCar(val) {
+  chartCar = val;
+  renderChartCarToggle();
+  loadChartView();
+}
+
+function setChartView(view, el) {
+  chartView = view;
+  document.querySelectorAll('#chartSubtabs .chip').forEach(c => c.classList.remove('chip-active'));
+  if (el) el.classList.add('chip-active');
+  ['efficiency','mileage','charging'].forEach(v => {
+    const node = document.getElementById('chartview-' + v);
+    if (node) node.style.display = (v === view) ? 'block' : 'none';
+  });
+  loadChartView();
+}
+
+function setChartRange(days, el) {
+  chartRangeDays = days;
+  document.querySelectorAll('#chartRangeChips .chip').forEach(c => c.classList.remove('chip-active'));
+  if (el) el.classList.add('chip-active');
+  loadChartView();
+}
+
+function loadChartView() {
+  if (chartView === 'efficiency') loadEfficiency();
+  // mileage / charging are placeholders for now
+}
+
+async function fetchEfficiency(vin) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const r = await fetch(`${BRIDGE_BASE}/efficiency?secret=${secret}&vin=${vin}&days=${chartRangeDays}`);
+  return r.json();
+}
+
+async function loadEfficiency() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  const vins = chartSelectedVins();
+  const summaryEl = document.getElementById('effSummary');
+  const bucketsEl = document.getElementById('effBuckets');
+  const drivesEl = document.getElementById('effDrives');
+  const emptyEl = document.getElementById('effScatterEmpty');
+  if (!summaryEl) return;
+  if (vins.length === 0) { summaryEl.innerHTML = '<div style="color:var(--text-soft);">No vehicle selected.</div>'; return; }
+  summaryEl.innerHTML = '';
+  bucketsEl.innerHTML = '<div style="color:var(--text-soft); padding:8px 0;">Loading…</div>';
+  drivesEl.innerHTML = '';
+
+  let datasets;
+  try {
+    datasets = await Promise.all(vins.map(async vin => ({ vin, data: await fetchEfficiency(vin) })));
+  } catch(e) {
+    bucketsEl.innerHTML = `<div style="color:var(--danger,#E24B4A); padding:8px 0;">Error: ${e.message}</div>`;
+    return;
+  }
+
+  const anyDrives = datasets.some(ds => ds.data.summary && ds.data.summary.drive_count > 0);
+  if (!anyDrives) {
+    summaryEl.innerHTML = '<div style="color:var(--text-soft);">No drives with usable data in this range yet. Take a few drives and check back.</div>';
+    bucketsEl.innerHTML = '';
+    if (emptyEl) { emptyEl.style.display = 'block'; emptyEl.textContent = 'No drive data yet'; }
+    if (effScatterChart) { effScatterChart.destroy(); effScatterChart = null; }
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  const multi = datasets.length > 1;
+  const tile = (label, val, unit, color) => `<div style="flex:1; min-width:115px; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:12px 14px;">
+    <div style="font-size:11px; color:var(--text-soft); text-transform:uppercase; letter-spacing:.04em;">${label}</div>
+    <div style="font-size:21px; font-weight:600; margin-top:3px; ${color?`color:${color};`:''}">${val}<span style="font-size:13px; font-weight:400; color:var(--text-soft);"> ${unit}</span></div>
+  </div>`;
+
+  // Summary: one row of tiles per car (labeled) when multi, else a single row
+  summaryEl.innerHTML = datasets.map(ds => {
+    const s = ds.data.summary || {};
+    if (!s.drive_count) return multi ? `<div style="width:100%; font-size:12px; color:var(--text-soft);">${carColor(ds.vin).name}: no drives in range</div>` : '';
+    const cc = multi ? carColor(ds.vin).solid : '';
+    const label = multi ? `<div style="width:100%; font-size:12px; font-weight:600; color:${cc}; margin:4px 0;">${carColor(ds.vin).name}</div>` : '';
+    return label + `<div style="display:flex; gap:10px; flex-wrap:wrap; width:100%; margin-bottom:${multi?'10px':'0'};">` +
+      tile('Avg consumption', s.avg_wh_per_mi, 'Wh/mi', cc) +
+      tile('Rated', ds.data.rated_wh_per_mi, 'Wh/mi', cc) +
+      tile('Distance', s.total_mi, 'mi', cc) +
+      tile('Drives', s.drive_count, '', cc) +
+      tile('Avg speed', s.avg_speed_mph, 'mph', cc) +
+    `</div>`;
+  }).join('');
+
+  // Temperature buckets — single car shows the bar table; multi shows compact per-car rows
+  if (!multi) {
+    const buckets = datasets[0].data.buckets || [];
+    if (buckets.length === 0) {
+      bucketsEl.innerHTML = '<div style="color:var(--text-soft); padding:8px 0;">No drives with temperature data yet.</div>';
+    } else {
+      bucketsEl.innerHTML = `<div style="display:grid; grid-template-columns: 70px 1fr 90px 70px 80px; gap:8px; align-items:center; font-size:11px; color:var(--text-soft); text-transform:uppercase; padding-bottom:8px; border-bottom:1px solid var(--border);">
+          <span>Temp</span><span>Efficiency</span><span style="text-align:right;">Wh/mi</span><span style="text-align:right;">Dist</span><span style="text-align:right;">Speed</span>
+        </div>` +
+        buckets.map(b => {
+          const pct = b.efficiency_pct;
+          const barPct = Math.max(0, Math.min(140, pct)) / 140 * 100;
+          const col = pct >= 100 ? 'var(--green,#3FB950)' : pct >= 90 ? '#E3A008' : '#E24B4A';
+          return `<div style="display:grid; grid-template-columns: 70px 1fr 90px 70px 80px; gap:8px; align-items:center; padding:9px 0; border-bottom:1px solid var(--border);">
+            <span style="font-weight:600;">${b.temp_f}°F</span>
+            <span style="display:flex; align-items:center; gap:8px;">
+              <span style="flex:1; height:8px; background:var(--bg); border-radius:4px; overflow:hidden; max-width:160px;"><span style="display:block; height:100%; width:${barPct}%; background:${col};"></span></span>
+              <span style="font-size:12px; font-weight:600; color:${col};">${pct}%</span>
+            </span>
+            <span style="text-align:right;">${b.avg_wh_per_mi}</span>
+            <span style="text-align:right;">${b.distance_mi} mi</span>
+            <span style="text-align:right;">${b.avg_speed_mph}</span>
+          </div>`;
+        }).join('');
+    }
+  } else {
+    // Multi-car: compact comparison — temp rows with each car's efficiency
+    bucketsEl.innerHTML = datasets.map(ds => {
+      const cc = carColor(ds.vin);
+      const buckets = ds.data.buckets || [];
+      if (buckets.length === 0) return `<div style="font-size:12px; color:var(--text-soft); margin:6px 0;">${cc.name}: no temp data</div>`;
+      return `<div style="font-size:12px; font-weight:600; color:${cc.solid}; margin:10px 0 4px;">${cc.name}</div>` +
+        buckets.map(b => `<div class="row" style="padding:6px 0;"><span class="row-label">${b.temp_f}°F</span><span class="row-val">${b.efficiency_pct}% · ${b.avg_wh_per_mi} Wh/mi · ${b.distance_mi} mi</span></div>`).join('');
+    }).join('');
+  }
+
+  // Recent drives — merged & labeled by car when multi
+  let allDrives = [];
+  datasets.forEach(ds => (ds.data.drives || []).forEach(dr => allDrives.push({ ...dr, _vin: ds.vin })));
+  allDrives.sort((a,b) => b.start_ts - a.start_ts);
+  drivesEl.innerHTML = allDrives.slice(0, 25).map(dr => {
+    const when = new Date(dr.start_ts * 1000).toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + new Date(dr.start_ts*1000).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    const col = dr.efficiency_pct >= 100 ? 'var(--green,#3FB950)' : dr.efficiency_pct >= 90 ? '#E3A008' : '#E24B4A';
+    const tag = multi ? `<span style="color:${carColor(dr._vin).solid}; font-weight:600;">${carColor(dr._vin).name}</span> · ` : '';
+    return `<div class="row"><span class="row-label">${tag}${when}${dr.temp_f!=null?` · ${dr.temp_f}°F`:''}</span>
+      <span class="row-val">${dr.distance_mi} mi · ${dr.wh_per_mi} Wh/mi · <span style="color:${col};">${dr.efficiency_pct}%</span></span></div>`;
+  }).join('') || '<div style="color:var(--text-soft); padding:8px 0;">No drives.</div>';
+
+  renderEffScatter(datasets, multi);
+}
+
+function renderEffScatter(datasets, multi) {
+  const wrap = document.getElementById('effScatterWrap');
+  const empty = document.getElementById('effScatterEmpty');
+  const chartDatasets = datasets.map(ds => {
+    const cc = carColor(ds.vin);
+    const pts = (ds.data.drives || []).filter(d => d.temp_f != null).map(d => ({ x: d.temp_f, y: d.efficiency_pct }));
+    return {
+      label: cc.name,
+      data: pts,
+      backgroundColor: multi ? cc.soft : pts.map(p => p.y >= 100 ? 'rgba(63,185,80,.8)' : p.y >= 90 ? 'rgba(227,160,8,.8)' : 'rgba(226,75,74,.8)'),
+      pointRadius: 6, pointHoverRadius: 8
+    };
+  }).filter(d => d.data.length > 0);
+
+  const totalPts = chartDatasets.reduce((n, d) => n + d.data.length, 0);
+  if (totalPts < 2) {
+    if (wrap) wrap.style.display = 'none';
+    if (empty) { empty.style.display = 'block'; empty.textContent = 'Need at least 2 drives with temperature data for the chart.'; }
+    if (effScatterChart) { effScatterChart.destroy(); effScatterChart = null; }
+    return;
+  }
+  if (wrap) wrap.style.display = 'block';
+  if (empty) empty.style.display = 'none';
+  const ctx = document.getElementById('effScatter').getContext('2d');
+  if (effScatterChart) effScatterChart.destroy();
+  effScatterChart = new Chart(ctx, {
+    type: 'scatter',
+    data: { datasets: chartDatasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: multi },
+        tooltip: { callbacks: { label: c => `${multi?c.dataset.label+': ':''}${c.parsed.x}°F → ${c.parsed.y}%` } }
+      },
+      scales: {
+        x: { title: { display: true, text: 'Outside temp (°F)' }, grid: { color: 'rgba(128,128,128,.12)' } },
+        y: { title: { display: true, text: 'Efficiency (%)' }, grid: { color: 'rgba(128,128,128,.12)' }, suggestedMin: 70, suggestedMax: 130 }
+      }
+    }
+  });
+}
 
 function setBatteryRange(days, el) {
   batteryRangeDays = days;
