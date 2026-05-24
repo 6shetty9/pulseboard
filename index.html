@@ -619,6 +619,22 @@ async function cmdApi(path, method='POST', body=null) {
 let pbWs = null;
 let pbLiveStateByVin = {};
 let pbConnectivityByVin = {};   // vin -> {status, ts, lastAliveTs}
+let pbLastSeenByVin = {};       // vin -> Unix seconds of last telemetry (from bridge)
+
+// Fetch the bridge's authoritative last-telemetry timestamp for all vehicles.
+// This is accurate across browser restarts (the bridge runs 24/7).
+async function refreshLastSeen() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !S.vehicles || S.vehicles.length === 0) return;
+  await Promise.all(S.vehicles.map(async v => {
+    try {
+      const r = await fetch(`${BRIDGE_BASE}/vehicle/last_seen?secret=${secret}&vin=${v.vin}`);
+      const d = await r.json();
+      if (d && d.last_seen_ts) pbLastSeenByVin[v.vin] = d.last_seen_ts;
+    } catch(e) { /* ignore — falls back to session timing */ }
+  }));
+  renderPicker();
+}
 // A car is "live" only if we've seen a connectivity/telemetry signal recently.
 const PB_LIVE_STALE_MS = 5 * 60 * 1000; // 5 min without any signal = consider stale/asleep
 function vinIsLive(vin) {
@@ -628,11 +644,17 @@ function vinIsLive(vin) {
   if (Date.now() - c.ts > PB_LIVE_STALE_MS) return false; // gone quiet → asleep
   return true;
 }
-// How long has the car been asleep? Returns ms since last alive signal, or null.
+// How long has the car been asleep? Prefers the bridge's authoritative
+// last-telemetry timestamp (survives browser restarts); falls back to the
+// browser session's lastAliveTs if the bridge value isn't loaded yet.
 function vinAsleepFor(vin) {
+  if (vinIsLive(vin) === true) return null; // not asleep
+  const bridgeTs = pbLastSeenByVin[vin]; // Unix seconds
+  if (bridgeTs) {
+    return Date.now() - bridgeTs * 1000;
+  }
   const c = pbConnectivityByVin[vin];
   if (!c || !c.lastAliveTs) return null;
-  if (vinIsLive(vin) === true) return null; // not asleep
   return Date.now() - c.lastAliveTs;
 }
 function fmtDurationMs(ms) {
@@ -703,6 +725,7 @@ async function handleTelemetryEvent(evt) {
     Object.assign(pbLiveStateByVin[evt.vin], evt.fields);
     // Any telemetry value implies the car is connected right now
     pbConnectivityByVin[evt.vin] = { status: 'CONNECTED', ts: Date.now(), lastAliveTs: Date.now() };
+    pbLastSeenByVin[evt.vin] = Math.floor(Date.now() / 1000); // keep bridge cache fresh too
     updateLiveDisplay();
     
     // Real-time threat detection (only for currently selected vehicle)
@@ -1164,6 +1187,7 @@ async function showDash() {
   loadCfgToForm();
   if (S.vehicles.length === 0) await fetchVehicles();
   renderPicker();
+  refreshLastSeen();
   loadVehicleCard();
   loadDriveSessions();
 }
@@ -1684,11 +1708,10 @@ setTimeout(() => {
   if (S.token) connectTelemetry();
 }, 500);
 
-// Refresh the vehicle picker periodically so "online → asleep" transitions
-// show up even when no new telemetry is arriving (staleness check).
-setInterval(() => {
-  if (document.getElementById('tab-vehicle').style.display !== 'none') renderPicker();
-}, 60000);
+// Refresh vehicle status periodically. Pull the bridge's authoritative last-seen
+// timestamps and re-render the picker so online → asleep transitions show up and
+// the asleep duration stays accurate. Runs regardless of active tab.
+setInterval(() => { refreshLastSeen(); }, 60000);
 
 let chargeChart = null;
 
