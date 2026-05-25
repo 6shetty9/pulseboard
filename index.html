@@ -1975,10 +1975,15 @@ async function loadDriveSessions() {
     }
     driveSessionsCache = sessions;
 
-    // Summary stats for the selected period
+    // Summary stats for the selected period.
+    // Guard: only count drives with positive energy toward energy/efficiency totals.
+    // A negative-energy "drive" is a charging artifact (SOC rose) and would corrupt
+    // the averages — the detector now rejects these, but we double-guard here.
     const totalMi = sessions.reduce((a, s) => a + (s.distance_mi || 0), 0);
-    const totalKWh = sessions.reduce((a, s) => a + (s.energy_used_kwh || 0), 0);
-    const avgEff = totalMi > 0 ? (totalKWh * 1000 / totalMi) : 0;
+    const validEnergy = sessions.filter(s => s.energy_used_kwh > 0);
+    const totalKWh = validEnergy.reduce((a, s) => a + s.energy_used_kwh, 0);
+    const energyMi = validEnergy.reduce((a, s) => a + (s.distance_mi || 0), 0);
+    const avgEff = energyMi > 0 ? (totalKWh * 1000 / energyMi) : 0;
     const sumEl = document.getElementById('driveSummary');
     sumEl.style.display = 'grid';
     const hasCost = S.kwhRate && totalKWh > 0;
@@ -1987,7 +1992,7 @@ async function loadDriveSessions() {
     let html = `
       <div class="stat"><div class="stat-label">${rangeLabel} miles</div><div class="stat-val">${totalMi.toFixed(1)}</div><div class="stat-sub">${sessions.length} drive${sessions.length===1?'':'s'}</div></div>
       <div class="stat"><div class="stat-label">${rangeLabel} energy</div><div class="stat-val">${totalKWh.toFixed(1)}</div><div class="stat-sub">kWh</div></div>
-      <div class="stat"><div class="stat-label">Avg efficiency</div><div class="stat-val">${avgEff.toFixed(0)}</div><div class="stat-sub">Wh/mi</div></div>`;
+      <div class="stat"><div class="stat-label">Avg efficiency</div><div class="stat-val">${avgEff > 0 ? avgEff.toFixed(0) : '—'}</div><div class="stat-sub">Wh/mi</div></div>`;
     if (hasCost) {
       const totalCost = totalKWh * S.kwhRate;
       html += `<div class="stat"><div class="stat-label">${rangeLabel} cost</div><div class="stat-val">~$${totalCost.toFixed(2)}</div><div class="stat-sub">@ $${S.kwhRate}/kWh</div></div>`;
