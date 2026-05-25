@@ -1994,28 +1994,67 @@ async function loadDriveSessions() {
     }
     sumEl.innerHTML = html;
 
-    // Session list (filtered)
+    // Session list (filtered) — expandable rows with place names + detail
     el.innerHTML = sessions.map((s, i) => {
-      const start = new Date(s.start_ts * 1000).toLocaleString();
+      const startDate = new Date(s.start_ts * 1000);
+      const when = startDate.toLocaleDateString([], {month:'short', day:'numeric'}) + ', ' + startDate.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
       const dur = Math.round(s.duration_s / 60);
       const hrs = Math.floor(dur / 60), mins = dur % 60;
       const durStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
       const dist = (s.distance_mi || 0).toFixed(1);
       const eff = s.efficiency_wh_per_mi > 0 ? `${Math.round(s.efficiency_wh_per_mi)} Wh/mi` : '—';
+      const route = (s.start_place || s.end_place)
+        ? `${s.start_place || '?'} → ${s.end_place || '?'}`
+        : when;
+
       let costStr = '';
       if (S.kwhRate && s.energy_used_kwh > 0) {
-        const cost = s.energy_used_kwh * S.kwhRate;
-        costStr = ` &nbsp;·&nbsp; ~$${cost.toFixed(2)}`;
+        costStr = ` &nbsp;·&nbsp; ~$${(s.energy_used_kwh * S.kwhRate).toFixed(2)}`;
       }
-      return `<div class="row" style="cursor:pointer;" onclick="showDriveRoute(${i})">
-        <span class="row-label">${start}</span>
-        <span class="row-val">${dist} mi &nbsp;·&nbsp; ${durStr} &nbsp;·&nbsp; ${eff}${costStr}</span>
+
+      // Detail fields
+      const tempStr = (s.avg_temp_f != null) ? `${Math.round(s.avg_temp_f)}°F` : '—';
+      const socStr = (s.start_soc != null && s.end_soc != null) ? `${Math.round(s.start_soc)}% → ${Math.round(s.end_soc)}%` : '—';
+      const avgSp = s.avg_speed_mph > 0 ? `${Math.round(s.avg_speed_mph)} mph` : '—';
+      const maxSp = s.max_speed_mph > 0 ? `${Math.round(s.max_speed_mph)} mph` : '—';
+      const energy = s.energy_used_kwh > 0 ? `${s.energy_used_kwh.toFixed(1)} kWh` : '—';
+      const detailCell = (label, val) => `<div style="flex:1; min-width:90px;"><div style="font-size:10px; color:var(--text-soft); text-transform:uppercase; letter-spacing:.03em;">${label}</div><div style="font-size:13px; font-weight:500; margin-top:1px;">${val}</div></div>`;
+
+      return `<div class="drive-item" style="border-bottom:1px solid var(--border);">
+        <div class="row" style="cursor:pointer; align-items:center;" onclick="toggleDriveDetail(${i})">
+          <span class="row-label" style="display:flex; flex-direction:column; gap:2px;">
+            <span style="font-weight:500;">${route}</span>
+            <span style="font-size:11px; color:var(--text-soft);">${when}</span>
+          </span>
+          <span class="row-val" style="text-align:right;">${dist} mi &nbsp;·&nbsp; ${durStr} &nbsp;·&nbsp; ${eff}${costStr}
+            <span id="driveChevron${i}" style="color:var(--text-soft); margin-left:6px;">▾</span>
+          </span>
+        </div>
+        <div id="driveDetail${i}" style="display:none; padding:4px 0 14px;">
+          <div style="display:flex; gap:14px; flex-wrap:wrap; padding:10px 12px; background:var(--bg); border-radius:8px;">
+            ${detailCell('Battery', socStr)}
+            ${detailCell('Energy', energy)}
+            ${detailCell('Temp', tempStr)}
+            ${detailCell('Avg speed', avgSp)}
+            ${detailCell('Max speed', maxSp)}
+          </div>
+          <button onclick="event.stopPropagation(); showDriveRoute(${i})" style="margin-top:10px; font-size:12px; padding:6px 14px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">🗺 Show route</button>
+        </div>
       </div>`;
     }).join('');
   } catch(e) {
     console.log('drive sessions load failed:', e);
     el.innerHTML = '<div class="empty">Could not load drives.</div>';
   }
+}
+
+function toggleDriveDetail(i) {
+  const detail = document.getElementById('driveDetail' + i);
+  const chev = document.getElementById('driveChevron' + i);
+  if (!detail) return;
+  const showing = detail.style.display !== 'none';
+  detail.style.display = showing ? 'none' : 'block';
+  if (chev) chev.textContent = showing ? '▾' : '▴';
 }
 
 async function showDriveRoute(idx) {
@@ -2073,7 +2112,7 @@ async function showDriveRoute(idx) {
 
     // Fit bounds with a little padding
     driveMap.fitBounds(L.latLngBounds(latlngs), { padding: [20, 20] });
-    setTimeout(() => driveMap.invalidateSize(), 100);
+    setTimeout(() => { driveMap.invalidateSize(); mapEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 100);
   } catch(e) {
     console.log('drive route load failed:', e);
     mapEl.innerHTML = '<div class="empty" style="padding-top:120px;">Could not load route.</div>';
