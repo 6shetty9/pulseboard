@@ -389,7 +389,7 @@ input:checked + .slider:before { transform: translateX(20px); }
           </div>
           <div style="font-size:11px; color:var(--text-soft); margin-bottom:14px;">Past costs stay frozen at the rate when charged. Use “Recalculate” to re-apply current rates to all history.</div>
           <div id="chargeSummary" style="display:none; margin-bottom:14px;"></div>
-          <div id="chargeSessions"><div class="empty">Loading…</div></div>
+          <div id="chargeCostSessions"><div class="empty">Loading…</div></div>
         </div>
       </div>
     </div>
@@ -2264,7 +2264,7 @@ async function recalcChargeCosts(btn) {
 
 async function loadCharging() {
   const secret = localStorage.getItem('pb_proxy_secret');
-  const listEl = document.getElementById('chargeSessions');
+  const listEl = document.getElementById('chargeCostSessions');
   const sumEl = document.getElementById('chargeSummary');
   if (!listEl) return;
 
