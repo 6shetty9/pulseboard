@@ -372,11 +372,24 @@ input:checked + .slider:before { transform: translateX(20px); }
         </div>
       </div>
 
-      <!-- ===== Charging view (placeholder) ===== -->
+      <!-- ===== Charging view ===== -->
       <div id="chartview-charging" style="display:none;">
         <div class="card">
-          <div class="card-title">🔌 Charging stats</div>
-          <div style="color:var(--text-soft); font-size:13px; padding:20px 0; text-align:center;">Coming soon — energy added, session history, cost per session.</div>
+          <div class="card-title">🔌 Charging cost</div>
+          <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; margin-bottom:14px;">
+            <div>
+              <div style="font-size:11px; color:var(--text-soft); text-transform:uppercase; letter-spacing:.03em; margin-bottom:4px;">Home rate</div>
+              <div style="display:flex; align-items:center; gap:4px;">$<input id="rateHome" type="number" min="0" max="5" step="0.01" onchange="saveChargeRates()" style="width:72px; padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px; text-align:right;" /> /kWh</div>
+            </div>
+            <div>
+              <div style="font-size:11px; color:var(--text-soft); text-transform:uppercase; letter-spacing:.03em; margin-bottom:4px;">Away rate</div>
+              <div style="display:flex; align-items:center; gap:4px;">$<input id="rateAway" type="number" min="0" max="5" step="0.01" onchange="saveChargeRates()" style="width:72px; padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px; text-align:right;" /> /kWh</div>
+            </div>
+            <button onclick="recalcChargeCosts(this)" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">↻ Recalculate history</button>
+          </div>
+          <div style="font-size:11px; color:var(--text-soft); margin-bottom:14px;">Past costs stay frozen at the rate when charged. Use “Recalculate” to re-apply current rates to all history.</div>
+          <div id="chargeSummary" style="display:none; margin-bottom:14px;"></div>
+          <div id="chargeSessions"><div class="empty">Loading…</div></div>
         </div>
       </div>
     </div>
@@ -2223,7 +2236,99 @@ function setChartRange(days, el) {
 
 function loadChartView() {
   if (chartView === 'efficiency') loadEfficiency();
-  // mileage / charging are placeholders for now
+  else if (chartView === 'charging') loadCharging();
+  // mileage is a placeholder for now
+}
+
+// ---- Charging cost view ----
+async function saveChargeRates() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const home = parseFloat(document.getElementById('rateHome').value) || 0;
+  const away = parseFloat(document.getElementById('rateAway').value) || 0;
+  try {
+    await fetch(`${BRIDGE_BASE}/charging/rates?secret=${secret}&home=${home}&away=${away}`, { method: 'POST' });
+  } catch(e) { console.log('save rates failed', e); }
+}
+
+async function recalcChargeCosts(btn) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const orig = btn.textContent;
+  btn.textContent = '↻ Recalculating…'; btn.disabled = true;
+  try {
+    await saveChargeRates(); // ensure latest rates are persisted first
+    await fetch(`${BRIDGE_BASE}/charging/recalculate?secret=${secret}`, { method: 'POST' });
+    await loadCharging();
+  } catch(e) { console.log('recalc failed', e); }
+  btn.textContent = orig; btn.disabled = false;
+}
+
+async function loadCharging() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const listEl = document.getElementById('chargeSessions');
+  const sumEl = document.getElementById('chargeSummary');
+  if (!listEl) return;
+
+  // Load current rates into the editor (once populated, leave user edits alone).
+  try {
+    const rr = await fetch(`${BRIDGE_BASE}/charging/rates?secret=${secret}`);
+    const rates = await rr.json();
+    const hEl = document.getElementById('rateHome'), aEl = document.getElementById('rateAway');
+    if (hEl && document.activeElement !== hEl) hEl.value = rates.home;
+    if (aEl && document.activeElement !== aEl) aEl.value = rates.away;
+  } catch(e) {}
+
+  // Which vehicles to show (respect the chart car selector; 'both' merges).
+  const vins = chartSelectedVins();
+  if (vins.length === 0) { listEl.innerHTML = '<div class="empty">No vehicle selected.</div>'; return; }
+
+  let all = [];
+  for (const vin of vins) {
+    try {
+      const r = await fetch(`${BRIDGE_BASE}/charging/sessions?secret=${secret}&vin=${vin}&limit=500`);
+      const d = await r.json();
+      (d.sessions || []).forEach(s => { s._vin = vin; all.push(s); });
+    } catch(e) { console.log('charging load failed', e); }
+  }
+
+  // Filter to selected range.
+  const now = Math.floor(Date.now()/1000);
+  const cutoff = chartRangeDays > 0 ? now - chartRangeDays*86400 : 0;
+  all = all.filter(s => s.start_ts >= cutoff).sort((a,b) => b.start_ts - a.start_ts);
+
+  if (all.length === 0) {
+    listEl.innerHTML = '<div class="empty">No charging sessions in this period.</div>';
+    sumEl.style.display = 'none';
+    return;
+  }
+
+  // Summary totals.
+  const totKWh = all.reduce((a,s) => a + (s.energy_kwh||0), 0);
+  const totCost = all.reduce((a,s) => a + (s.cost||0), 0);
+  const homeCount = all.filter(s => s.is_home).length;
+  sumEl.style.display = 'grid';
+  sumEl.style.gridTemplateColumns = 'repeat(3, 1fr)';
+  sumEl.style.gap = '10px';
+  sumEl.innerHTML = `
+    <div class="stat"><div class="stat-label">Total energy</div><div class="stat-val">${totKWh.toFixed(1)}</div><div class="stat-sub">kWh · ${all.length} session${all.length===1?'':'s'}</div></div>
+    <div class="stat"><div class="stat-label">Total cost</div><div class="stat-val">$${totCost.toFixed(2)}</div><div class="stat-sub">${homeCount} home · ${all.length-homeCount} away</div></div>
+    <div class="stat"><div class="stat-label">Avg cost/kWh</div><div class="stat-val">$${totKWh>0 ? (totCost/totKWh).toFixed(2) : '0.00'}</div><div class="stat-sub">blended</div></div>`;
+
+  // Session list.
+  listEl.innerHTML = all.map(s => {
+    const d = new Date(s.start_ts*1000);
+    const when = d.toLocaleDateString([], {month:'short', day:'numeric'}) + ', ' + d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    const loc = s.location_name || (s.is_home ? 'Home' : 'Unknown');
+    const pill = s.is_home ? '🏠' : '🔌';
+    const soc = (s.start_soc!=null && s.end_soc!=null) ? `${Math.round(s.start_soc)}→${Math.round(s.end_soc)}%` : '';
+    const carTag = (chartCar === 'both') ? ` · ${(S.vehicles.find(v=>v.vin===s._vin)||{}).name?.replace('Tesla ','')||''}` : '';
+    return `<div class="row">
+      <span class="row-label" style="display:flex; flex-direction:column; gap:2px;">
+        <span style="font-weight:500;">${pill} ${loc}</span>
+        <span style="font-size:11px; color:var(--text-soft);">${when}${carTag}</span>
+      </span>
+      <span class="row-val" style="text-align:right;">${(s.energy_kwh||0).toFixed(1)} kWh${soc?' · '+soc:''}<br><span style="font-weight:600;">$${(s.cost||0).toFixed(2)}</span> <span style="font-size:11px; color:var(--text-soft);">@ $${(s.rate_used||0).toFixed(2)}</span></span>
+    </div>`;
+  }).join('');
 }
 
 async function fetchEfficiency(vin) {
