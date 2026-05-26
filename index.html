@@ -1207,10 +1207,16 @@ function updateLiveDisplay() {
         slot.appendChild(locationMapEl);
         locationMap = L.map(locationMapEl, { zoomControl: true, attributionControl: false }).setView([latitude, longitude], 15);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(locationMap);
-        locationMarker = L.circleMarker([latitude, longitude], {
-          radius: 8, color: '#E24B4A', fillColor: '#E24B4A', fillOpacity: 0.9, weight: 2
-        }).addTo(locationMap);
-        // Smooth glide: let the marker's SVG path animate position changes.
+        // TeslaMate-style heading arrow: a blue chevron that rotates to GpsHeading.
+        const arrowIcon = L.divIcon({
+          className: 'pb-heading-marker',
+          html: `<svg width="30" height="30" viewBox="0 0 30 30" style="transform:rotate(0deg);transition:transform 1s linear;">
+                   <path d="M15 2 L24 26 L15 20 L6 26 Z" fill="#1E88E5" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
+                 </svg>`,
+          iconSize: [30, 30], iconAnchor: [15, 15]
+        });
+        locationMarker = L.marker([latitude, longitude], { icon: arrowIcon, interactive: false }).addTo(locationMap);
+        // Smooth glide: animate the marker's position node between fixes.
         const mp = locationMarker.getElement && locationMarker.getElement();
         if (mp) mp.style.transition = 'transform 1s linear';
         locationLastLatLng = [latitude, longitude];
@@ -1230,6 +1236,12 @@ function updateLiveDisplay() {
           locationMarker.setLatLng([latitude, longitude]);
           locationMap.panTo([latitude, longitude], { animate: true, duration: 1.0, easeLinearity: 1 });
           locationLastLatLng = [latitude, longitude];
+        }
+        // Rotate the arrow to the current heading (independent of movement).
+        if (typeof state.GpsHeading === 'number') {
+          const svg = locationMarker.getElement && locationMarker.getElement();
+          const path = svg && svg.querySelector('svg');
+          if (path) path.style.transform = `rotate(${state.GpsHeading}deg)`;
         }
       }
     }
