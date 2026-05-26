@@ -182,7 +182,7 @@ input:checked + .slider:before { transform: translateX(20px); }
       <button class="tab" onclick="showTab('monitor',this)">Sentry monitor</button>
       <button class="tab" onclick="showTab('charge',this)">Charge</button>
       <button class="tab" onclick="showTab('battery',this)">Battery</button>
-      <button class="tab" onclick="showTab('charts',this)">Charts</button>
+      <button class="tab" onclick="showTab('charts',this)">Analytics</button>
       <button class="tab" onclick="showTab('geofences',this)">Geofences</button>
       <button class="tab" onclick="showTab('schedules',this)">Schedules</button>
       <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
@@ -281,10 +281,6 @@ input:checked + .slider:before { transform: translateX(20px); }
           <canvas id="chargeChart"></canvas>
         </div>
         <div id="chargeChartEmpty" style="text-align: center; color: var(--text-soft); font-size: 13px; padding: 60px 0;">Loading…</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Past charging sessions</div>
-        <div id="chargeSessions"><div class="empty">Loading…</div></div>
       </div>
     </div>
 
@@ -1381,7 +1377,7 @@ function showTab(name, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   if (name === 'vehicle') { renderPicker(); loadVehicleCard(); loadDriveSessions(); }
-  if (name === 'charge') { syncChargeSliders(); loadChargeChart(); loadChargeSessions(); }
+  if (name === 'charge') { syncChargeSliders(); loadChargeChart(); }
   if (name === 'battery') { loadBatteryHealth(); }
   if (name === 'charts') { renderChartCarToggle(); loadChartView(); }
   if (name === 'geofences') { loadZones(); }
@@ -1942,31 +1938,6 @@ async function loadChargeChart() {
   } catch(e) { console.log('chart load failed:', e); }
 }
 
-async function loadChargeSessions() {
-  const secret = localStorage.getItem('pb_proxy_secret');
-  if (!secret || !S.vehicleVin) return;
-  const el = document.getElementById('chargeSessions');
-  if (!el) return;
-  try {
-    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/charging?secret=${secret}&vin=${S.vehicleVin}`);
-    const d = await r.json();
-    if (!d.sessions || d.sessions.length === 0) {
-      el.innerHTML = '<div class="empty">No past charging sessions recorded yet.</div>';
-      return;
-    }
-    el.innerHTML = d.sessions.map(s => {
-      const start = new Date(s.start_ts * 1000).toLocaleString();
-      const dur = Math.round(s.duration_s / 60);
-      const hrs = Math.floor(dur / 60), mins = dur % 60;
-      const durStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
-      return `<div class="row">
-        <span class="row-label">${start}</span>
-        <span class="row-val">+${s.soc_delta.toFixed(1)}% &nbsp;·&nbsp; ${durStr} &nbsp;·&nbsp; ${s.start_soc.toFixed(0)}→${s.end_soc.toFixed(0)}%</span>
-      </div>`;
-    }).join('');
-  } catch(e) { console.log('sessions load failed:', e); }
-}
-
 // ---- Drive history ----
 let driveMap = null;
 let driveRouteLayer = null;
@@ -2320,6 +2291,8 @@ async function loadCharging() {
     const loc = s.location_name || (s.is_home ? 'Home' : 'Unknown');
     const pill = s.is_home ? '🏠' : '🔌';
     const soc = (s.start_soc!=null && s.end_soc!=null) ? `${Math.round(s.start_soc)}→${Math.round(s.end_soc)}%` : '';
+    const durMin = Math.round((s.duration_s||0) / 60);
+    const durStr = durMin >= 60 ? `${Math.floor(durMin/60)}h ${durMin%60}m` : `${durMin}m`;
     const carTag = (chartCar === 'both') ? ` · ${(S.vehicles.find(v=>v.vin===s._vin)||{}).name?.replace('Tesla ','')||''}` : '';
     // Override state: null = auto (geofence), 1 = forced home, 0 = forced away.
     const ov = s.home_override;
@@ -2337,7 +2310,7 @@ async function loadCharging() {
           <span style="font-weight:500;">${pill} ${loc}</span>
           <span style="font-size:11px; color:var(--text-soft);">${when}${carTag}</span>
         </span>
-        <span class="row-val" style="text-align:right;">${(s.energy_kwh||0).toFixed(1)} kWh${soc?' · '+soc:''}<br><span style="font-weight:600;">$${(s.cost||0).toFixed(2)}</span> <span style="font-size:11px; color:var(--text-soft);">@ $${(s.rate_used||0).toFixed(2)}</span></span>
+        <span class="row-val" style="text-align:right;">${(s.energy_kwh||0).toFixed(1)} kWh · ${durStr}${soc?' · '+soc:''}<br><span style="font-weight:600;">$${(s.cost||0).toFixed(2)}</span> <span style="font-size:11px; color:var(--text-soft);">@ $${(s.rate_used||0).toFixed(2)}</span></span>
       </div>
       ${controls}
     </div>`;
