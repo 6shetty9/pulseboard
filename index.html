@@ -2313,7 +2313,7 @@ async function loadCharging() {
     <div class="stat"><div class="stat-label">Total cost</div><div class="stat-val">$${totCost.toFixed(2)}</div><div class="stat-sub">${homeCount} home · ${all.length-homeCount} away</div></div>
     <div class="stat"><div class="stat-label">Avg cost/kWh</div><div class="stat-val">$${totKWh>0 ? (totCost/totKWh).toFixed(2) : '0.00'}</div><div class="stat-sub">blended</div></div>`;
 
-  // Session list.
+  // Session list with per-row home/away override.
   listEl.innerHTML = all.map(s => {
     const d = new Date(s.start_ts*1000);
     const when = d.toLocaleDateString([], {month:'short', day:'numeric'}) + ', ' + d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
@@ -2321,14 +2321,36 @@ async function loadCharging() {
     const pill = s.is_home ? '🏠' : '🔌';
     const soc = (s.start_soc!=null && s.end_soc!=null) ? `${Math.round(s.start_soc)}→${Math.round(s.end_soc)}%` : '';
     const carTag = (chartCar === 'both') ? ` · ${(S.vehicles.find(v=>v.vin===s._vin)||{}).name?.replace('Tesla ','')||''}` : '';
-    return `<div class="row">
-      <span class="row-label" style="display:flex; flex-direction:column; gap:2px;">
-        <span style="font-weight:500;">${pill} ${loc}</span>
-        <span style="font-size:11px; color:var(--text-soft);">${when}${carTag}</span>
-      </span>
-      <span class="row-val" style="text-align:right;">${(s.energy_kwh||0).toFixed(1)} kWh${soc?' · '+soc:''}<br><span style="font-weight:600;">$${(s.cost||0).toFixed(2)}</span> <span style="font-size:11px; color:var(--text-soft);">@ $${(s.rate_used||0).toFixed(2)}</span></span>
+    // Override state: null = auto (geofence), 1 = forced home, 0 = forced away.
+    const ov = s.home_override;
+    const overridden = (ov === 0 || ov === 1);
+    const btn = (lbl, val, on) => `<button onclick="setChargeOverride(${s.id}, '${val}')" style="font-size:10px; padding:2px 8px; border-radius:5px; cursor:pointer; border:1px solid var(--border); background:${on?'var(--text)':'transparent'}; color:${on?'var(--bg)':'var(--text-soft)'};">${lbl}</button>`;
+    const controls = `<div style="display:flex; gap:4px; margin-top:6px; align-items:center;">
+      ${btn('🏠 Home', '1', s.is_home && overridden)}
+      ${btn('🔌 Away', '0', !s.is_home && overridden)}
+      ${btn('Auto', 'auto', !overridden)}
+      ${overridden ? '<span style="font-size:10px; color:var(--text-soft);">manual</span>' : ''}
+    </div>`;
+    return `<div class="row" style="flex-direction:column; align-items:stretch; gap:0;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <span class="row-label" style="display:flex; flex-direction:column; gap:2px;">
+          <span style="font-weight:500;">${pill} ${loc}</span>
+          <span style="font-size:11px; color:var(--text-soft);">${when}${carTag}</span>
+        </span>
+        <span class="row-val" style="text-align:right;">${(s.energy_kwh||0).toFixed(1)} kWh${soc?' · '+soc:''}<br><span style="font-weight:600;">$${(s.cost||0).toFixed(2)}</span> <span style="font-size:11px; color:var(--text-soft);">@ $${(s.rate_used||0).toFixed(2)}</span></span>
+      </div>
+      ${controls}
     </div>`;
   }).join('');
+}
+
+// Set (or clear) a single session's home/away override and recompute just that row.
+async function setChargeOverride(id, val) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  try {
+    await fetch(`${BRIDGE_BASE}/charging/session?secret=${secret}&id=${id}&home=${val}`, { method: 'POST' });
+    await loadCharging(); // refresh list + summary totals
+  } catch(e) { console.log('override failed', e); }
 }
 
 async function fetchEfficiency(vin) {
