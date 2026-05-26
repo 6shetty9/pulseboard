@@ -716,7 +716,8 @@ function pbBool(v) {
 }
 let locationMap = null;         // Leaflet map for Motion & Location tab
 let locationMarker = null;
-let locationMapNode = null;     // the DOM node the map is currently bound to
+let locationMapEl = null;       // persistent map DOM node (survives innerHTML rebuilds)
+let locationLastLatLng = null;  // last marker position, to suppress GPS-noise jitter
 
 // Fetch the bridge's authoritative last-telemetry timestamp for all vehicles.
 // This is accurate across browser restarts (the bridge runs 24/7).
@@ -1175,7 +1176,7 @@ function updateLiveDisplay() {
           <span class="row-label">${label}</span>
           <span class="row-val" style="font-size: 12px; color: var(--text-soft);">${latitude.toFixed(4)}, ${longitude.toFixed(4)}${heading ? ' · ' + heading : ''}</span>
         </div>
-        <div id="locationMap" style="width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 8px;"></div>
+        <div id="locationMapSlot" style="width: 100%; height: 220px;"></div>
         <a href="https://maps.google.com/?q=${latitude},${longitude}" target="_blank" style="font-size: 12px; margin-top: 6px; color: var(--text-soft);">Open in Google Maps ↗</a>
       </div>`;
     } else if (f in state) {
@@ -1189,32 +1190,53 @@ function updateLiveDisplay() {
   el.innerHTML = tabsHtml + rowsHtml;
 
   // Render the live location on a Leaflet map (Motion & Location tab only).
-  // The innerHTML rebuild above replaces the #locationMap node, so the existing
-  // map instance is orphaned. We rebuild only when the node changed; otherwise we
-  // just move the marker so it doesn't flicker on every telemetry tick.
+  // The #liveData innerHTML is rebuilt every telemetry tick, which would destroy
+  // an embedded map node and cause the whole map (tiles included) to flicker and
+  // the marker to teleport. To avoid that, the Leaflet map lives in a PERSISTENT
+  // detached node (locationMapEl) created once. Each render we just re-parent that
+  // node into the freshly-rendered #locationMapSlot — Leaflet instance survives, so
+  // tiles never reload and we only move the marker. Marker glides via CSS transition.
   if (pbActiveCategory === 'Motion & Location' && state.Location && state.Location.latitude) {
     const { latitude, longitude } = state.Location;
-    const mapDiv = document.getElementById('locationMap');
-    if (mapDiv && window.L) {
-      if (locationMap && locationMapNode === mapDiv) {
-        // Same node still mounted — just update marker + recenter (no flicker)
-        locationMarker.setLatLng([latitude, longitude]);
-        locationMap.panTo([latitude, longitude], { animate: true });
-      } else {
-        if (locationMap) { try { locationMap.remove(); } catch(e) {} }
-        locationMap = L.map(mapDiv, { zoomControl: true, attributionControl: false }).setView([latitude, longitude], 15);
+    const slot = document.getElementById('locationMapSlot');
+    if (slot && window.L) {
+      // Create the persistent map node once.
+      if (!locationMapEl) {
+        locationMapEl = document.createElement('div');
+        locationMapEl.style.cssText = 'width:100%;height:100%;border:1px solid var(--border);border-radius:8px;';
+        slot.appendChild(locationMapEl);
+        locationMap = L.map(locationMapEl, { zoomControl: true, attributionControl: false }).setView([latitude, longitude], 15);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(locationMap);
         locationMarker = L.circleMarker([latitude, longitude], {
           radius: 8, color: '#E24B4A', fillColor: '#E24B4A', fillOpacity: 0.9, weight: 2
         }).addTo(locationMap);
-        locationMapNode = mapDiv;
+        // Smooth glide: let the marker's SVG path animate position changes.
+        const mp = locationMarker.getElement && locationMarker.getElement();
+        if (mp) mp.style.transition = 'transform 1s linear';
+        locationLastLatLng = [latitude, longitude];
         setTimeout(() => { if (locationMap) locationMap.invalidateSize(); }, 50);
+      } else if (locationMapEl.parentNode !== slot) {
+        // Re-parent the surviving map into the new slot (no teardown, no flicker).
+        slot.appendChild(locationMapEl);
+        setTimeout(() => { if (locationMap) locationMap.invalidateSize(); }, 50);
+      }
+      // Move the marker (and gently follow) only when the car actually moved enough
+      // to matter — avoids jitter from tiny GPS noise while parked.
+      if (locationMarker) {
+        const moved = !locationLastLatLng ||
+          Math.abs(locationLastLatLng[0] - latitude) > 0.00002 ||
+          Math.abs(locationLastLatLng[1] - longitude) > 0.00002;
+        if (moved) {
+          locationMarker.setLatLng([latitude, longitude]);
+          locationMap.panTo([latitude, longitude], { animate: true, duration: 1.0, easeLinearity: 1 });
+          locationLastLatLng = [latitude, longitude];
+        }
       }
     }
   } else if (pbActiveCategory !== 'Motion & Location' && locationMap) {
-    // Left the tab — drop the map so a stale node reference doesn't linger
+    // Left the tab — fully drop the map so it rebuilds cleanly next time.
     try { locationMap.remove(); } catch(e) {}
-    locationMap = null; locationMapNode = null;
+    locationMap = null; locationMapEl = null; locationMarker = null; locationLastLatLng = null;
   }
 }
 
