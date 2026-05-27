@@ -182,9 +182,9 @@ input:checked + .slider:before { transform: translateX(20px); }
       <button class="tab" onclick="showTab('monitor',this)">Sentry monitor</button>
       <button class="tab" onclick="showTab('charge',this)">Charge</button>
       <button class="tab" onclick="showTab('battery',this)">Battery</button>
+      <button class="tab" onclick="showTab('schedules',this)">Schedules</button>
       <button class="tab" onclick="showTab('charts',this)">Analytics</button>
       <button class="tab" onclick="showTab('geofences',this)">Geofences</button>
-      <button class="tab" onclick="showTab('schedules',this)">Schedules</button>
       <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
       <button class="tab" onclick="showTab('notify',this)">Notifications</button>
       <button class="tab" onclick="showTab('settings',this)">Settings</button>
@@ -229,21 +229,6 @@ input:checked + .slider:before { transform: translateX(20px); }
           <span id="liveStatus" class="pill pill-off" style="margin-left: 8px; font-size: 11px;">offline</span>
         </div>
         <div id="liveData"><div style="color: var(--text-soft); font-size: 13px;">Waiting for live data...</div></div>
-      </div>
-      <div class="card">
-        <div class="card-title">🚗 Drive history</div>
-        <div id="driveRangeChips" style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
-          <button class="chip" onclick="setDriveRange(1,this)">24h</button>
-          <button class="chip chip-active" onclick="setDriveRange(7,this)">7d</button>
-          <button class="chip" onclick="setDriveRange(30,this)">30d</button>
-          <button class="chip" onclick="setDriveRange(60,this)">60d</button>
-          <button class="chip" onclick="setDriveRange(90,this)">90d</button>
-          <button class="chip" onclick="setDriveRange(365,this)">1y</button>
-          <button class="chip" onclick="setDriveRange(0,this)">All</button>
-        </div>
-        <div id="driveSummary" style="display:none; margin-bottom: 12px;"></div>
-        <div id="driveMap" style="display:none; height: 280px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
-        <div id="driveSessions"><div class="empty">Loading…</div></div>
       </div>
     </div>
 
@@ -320,6 +305,7 @@ input:checked + .slider:before { transform: translateX(20px); }
             <button class="chip chip-active" onclick="setChartView('efficiency',this)">⚡ Efficiency</button>
             <button class="chip" onclick="setChartView('mileage',this)">🛣 Mileage</button>
             <button class="chip" onclick="setChartView('charging',this)">🔌 Charging</button>
+            <button class="chip" onclick="setChartView('drives',this)">🚗 Drives</button>
           </div>
           <!-- Car selector: M3L / MYP / Both -->
           <div id="chartCarToggle" style="display:flex; gap:6px;"></div>
@@ -386,6 +372,25 @@ input:checked + .slider:before { transform: translateX(20px); }
           <div style="font-size:11px; color:var(--text-soft); margin-bottom:14px;">Past costs stay frozen at the rate when charged. Use “Recalculate” to re-apply current rates to all history.</div>
           <div id="chargeSummary" style="display:none; margin-bottom:14px;"></div>
           <div id="chargeCostSessions"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <!-- ===== Drives view ===== -->
+      <div id="chartview-drives" style="display:none;">
+        <div class="card">
+          <div class="card-title">🚗 Drive history</div>
+          <div id="driveRangeChips" style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+            <button class="chip" onclick="setDriveRange(1,this)">24h</button>
+            <button class="chip chip-active" onclick="setDriveRange(7,this)">7d</button>
+            <button class="chip" onclick="setDriveRange(30,this)">30d</button>
+            <button class="chip" onclick="setDriveRange(60,this)">60d</button>
+            <button class="chip" onclick="setDriveRange(90,this)">90d</button>
+            <button class="chip" onclick="setDriveRange(365,this)">1y</button>
+            <button class="chip" onclick="setDriveRange(0,this)">All</button>
+          </div>
+          <div id="driveSummary" style="display:none; margin-bottom: 12px;"></div>
+          <div id="driveMap" style="display:none; height: 280px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
+          <div id="driveSessions"><div class="empty">Loading…</div></div>
         </div>
       </div>
     </div>
@@ -473,6 +478,7 @@ input:checked + .slider:before { transform: translateX(20px); }
           <span>⏰ Schedules</span>
           <button onclick="openScheduleEditor()" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:var(--text); color:var(--bg); cursor:pointer; font-weight:500;">+ Add schedule</button>
         </div>
+        <div id="schedulesCarIndicator" style="font-size:12px; color:var(--text-soft); margin-bottom:12px;"></div>
         <div id="schedulesList"><div class="empty">Loading…</div></div>
       </div>
 
@@ -1219,10 +1225,10 @@ function updateLiveDisplay() {
         // TeslaMate-style heading arrow: a blue chevron that rotates to GpsHeading.
         const arrowIcon = L.divIcon({
           className: 'pb-heading-marker',
-          html: `<svg width="30" height="30" viewBox="0 0 30 30" style="transform:rotate(0deg);transition:transform 1s linear;">
+          html: `<svg width="22" height="22" viewBox="0 0 30 30" style="transform:rotate(0deg);transition:transform 1s linear;">
                    <path d="M15 2 L24 26 L15 20 L6 26 Z" fill="#1E88E5" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
                  </svg>`,
-          iconSize: [30, 30], iconAnchor: [15, 15]
+          iconSize: [22, 22], iconAnchor: [11, 11]
         });
         locationMarker = L.marker([latitude, longitude], { icon: arrowIcon, interactive: false }).addTo(locationMap);
         // Smooth glide: animate the marker's position node between fixes.
@@ -1376,7 +1382,7 @@ function showTab(name, el) {
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
-  if (name === 'vehicle') { renderPicker(); loadVehicleCard(); loadDriveSessions(); }
+  if (name === 'vehicle') { renderPicker(); loadVehicleCard(); }
   if (name === 'charge') { syncChargeSliders(); loadChargeChart(); }
   if (name === 'battery') { loadBatteryHealth(); }
   if (name === 'charts') { renderChartCarToggle(); loadChartView(); }
@@ -2191,7 +2197,7 @@ function setChartView(view, el) {
   chartView = view;
   document.querySelectorAll('#chartSubtabs .chip').forEach(c => c.classList.remove('chip-active'));
   if (el) el.classList.add('chip-active');
-  ['efficiency','mileage','charging'].forEach(v => {
+  ['efficiency','mileage','charging','drives'].forEach(v => {
     const node = document.getElementById('chartview-' + v);
     if (node) node.style.display = (v === view) ? 'block' : 'none';
   });
@@ -2209,6 +2215,7 @@ function loadChartView() {
   if (chartView === 'efficiency') loadEfficiency();
   else if (chartView === 'charging') loadCharging();
   else if (chartView === 'mileage') loadMileage();
+  else if (chartView === 'drives') loadDriveSessions();
 }
 
 // ---- Mileage stats (per month, per vehicle) ----
@@ -3086,6 +3093,13 @@ async function loadSchedules() {
   if (!secret) return;
   const listEl = document.getElementById('schedulesList');
   if (!listEl) return;
+
+  // Schedules are per-car; show which vehicle's schedules are displayed.
+  const indEl = document.getElementById('schedulesCarIndicator');
+  if (indEl) {
+    const carName = (S.vehicles.find(v => v.vin === S.vehicleVin)||{}).name || 'the active vehicle';
+    indEl.innerHTML = `Showing schedules for <strong style="color:var(--text);">${carName}</strong>. Switch vehicles from the Vehicle tab to manage another car's schedules.`;
+  }
 
   try {
     const vinParam = S.vehicleVin ? `&vin=${S.vehicleVin}` : '';
