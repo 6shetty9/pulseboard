@@ -303,8 +303,8 @@ input:checked + .slider:before { transform: translateX(20px); }
           <!-- Sub-tab selector -->
           <div id="chartSubtabs" style="display:flex; gap:6px; flex-wrap:wrap;">
             <button class="chip chip-active" onclick="setChartView('efficiency',this)">⚡ Efficiency</button>
-            <button class="chip" onclick="setChartView('mileage',this)">🛣 Mileage</button>
             <button class="chip" onclick="setChartView('charging',this)">🔌 Charging</button>
+            <button class="chip" onclick="setChartView('mileage',this)">🛣 Mileage</button>
             <button class="chip" onclick="setChartView('drives',this)">🚗 Drives</button>
           </div>
           <!-- Car selector: M3L / MYP / Both -->
@@ -1967,27 +1967,36 @@ async function loadDriveSessions() {
   // charging session, with rate frozen at charge time and varying by charging location
   // (home vs away). Build this when implementing the dedicated Cost calculator (#9).
   const secret = localStorage.getItem('pb_proxy_secret');
-  if (!secret || !S.vehicleVin) return;
+  if (!secret) return;
   const el = document.getElementById('driveSessions');
   if (!el) return;
 
-  // Clear any previously displayed route/map from the prior vehicle
+  // Drives follow the Analytics car selector (M3L / MYP / Both), like the other
+  // sub-tabs — not the globally-active vehicle.
+  const vins = chartSelectedVins();
+  if (vins.length === 0) { el.innerHTML = '<div class="empty">No vehicle selected.</div>'; return; }
+
+  // Clear any previously displayed route/map
   document.getElementById('driveMap').style.display = 'none';
   if (driveRouteLayer && driveMap) {
     driveMap.removeLayer(driveRouteLayer);
     driveRouteLayer = null;
   }
   driveSessionsCache = [];
+  const multiCar = vins.length > 1;
 
   try {
-    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${S.vehicleVin}&limit=500`);
-    const d = await r.json();
-    const allSessions = d.sessions || [];
+    let allSessions = [];
+    for (const vin of vins) {
+      const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${vin}&limit=500`);
+      const d = await r.json();
+      (d.sessions || []).forEach(s => { s._vin = vin; allSessions.push(s); });
+    }
 
-    // Filter to the selected period (0 = all time)
+    // Filter to the selected period (0 = all time), newest first.
     const now = Math.floor(Date.now() / 1000);
     const cutoff = driveRangeDays > 0 ? now - driveRangeDays * 86400 : 0;
-    const sessions = allSessions.filter(s => s.start_ts >= cutoff);
+    const sessions = allSessions.filter(s => s.start_ts >= cutoff).sort((a,b) => b.start_ts - a.start_ts);
     const rangeLabel = DRIVE_RANGE_LABELS[driveRangeDays] || `${driveRangeDays}-day`;
 
     if (sessions.length === 0) {
@@ -2040,6 +2049,7 @@ async function loadDriveSessions() {
       if (S.kwhRate && s.energy_used_kwh > 0) {
         costStr = ` &nbsp;·&nbsp; ~$${(s.energy_used_kwh * S.kwhRate).toFixed(2)}`;
       }
+      const carTag = multiCar ? ` · ${(S.vehicles.find(v=>v.vin===s._vin)||{}).name?.replace('Tesla ','')||''}` : '';
 
       // Detail fields
       const tempStr = (s.avg_temp_f != null) ? `${Math.round(s.avg_temp_f)}°F` : '—';
@@ -2053,7 +2063,7 @@ async function loadDriveSessions() {
         <div class="row" style="cursor:pointer; align-items:center;" onclick="toggleDriveDetail(${i})">
           <span class="row-label" style="display:flex; flex-direction:column; gap:2px;">
             <span style="font-weight:500;">${route}</span>
-            <span style="font-size:11px; color:var(--text-soft);">${when}</span>
+            <span style="font-size:11px; color:var(--text-soft);">${when}${carTag}</span>
           </span>
           <span class="row-val" style="text-align:right;">${dist} mi &nbsp;·&nbsp; ${durStr} &nbsp;·&nbsp; ${eff}${costStr}
             <span id="driveChevron${i}" style="color:var(--text-soft); margin-left:6px;">▾</span>
