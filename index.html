@@ -843,9 +843,15 @@ async function handleTelemetryEvent(evt) {
   if (evt.topic === 'pulseboard_V' && evt.fields && evt.vin) {
     if (!pbLiveStateByVin[evt.vin]) pbLiveStateByVin[evt.vin] = {};
     Object.assign(pbLiveStateByVin[evt.vin], evt.fields);
-    // Any telemetry value implies the car is connected right now
-    pbConnectivityByVin[evt.vin] = { status: 'CONNECTED', ts: Date.now(), lastAliveTs: Date.now() };
-    pbLastSeenByVin[evt.vin] = Math.floor(Date.now() / 1000); // keep bridge cache fresh too
+    // Only fresh, live telemetry implies the car is currently awake. The bridge
+    // marks its on-connect cached-state replay with snapshot:true — those values
+    // may be hours old, so they must NOT bump our "last seen" timestamp.
+    // refreshLastSeen() (which polls /vehicle/last_seen for the real MAX(ts))
+    // remains the source of truth for cached/stale data.
+    if (!evt.snapshot) {
+      pbConnectivityByVin[evt.vin] = { status: 'CONNECTED', ts: Date.now(), lastAliveTs: Date.now() };
+      pbLastSeenByVin[evt.vin] = Math.floor(Date.now() / 1000);
+    }
     updateLiveDisplay();
     
     // Real-time threat detection (only for currently selected vehicle)
