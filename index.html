@@ -363,8 +363,8 @@ input:checked + .slider:before { transform: translateX(20px); }
       <!-- ===== Mileage view (placeholder) ===== -->
       <div id="chartview-mileage" style="display:none;">
         <div class="card">
-          <div class="card-title">🛣 Mileage stats</div>
-          <div style="color:var(--text-soft); font-size:13px; padding:20px 0; text-align:center;">Coming soon — distance over time, daily/weekly/monthly totals.</div>
+          <div class="card-title">🛣 Mileage stats per month</div>
+          <div id="mileageContent"><div class="empty">Loading…</div></div>
         </div>
       </div>
 
@@ -2208,7 +2208,117 @@ function setChartRange(days, el) {
 function loadChartView() {
   if (chartView === 'efficiency') loadEfficiency();
   else if (chartView === 'charging') loadCharging();
-  // mileage is a placeholder for now
+  else if (chartView === 'mileage') loadMileage();
+}
+
+// ---- Mileage stats (per month, per vehicle) ----
+let mileageCharts = {}; // vin -> Chart instance, so we can destroy on reload
+
+async function loadMileage() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const container = document.getElementById('mileageContent');
+  if (!container) return;
+
+  // Destroy any prior charts before re-rendering.
+  Object.values(mileageCharts).forEach(c => { try { c.destroy(); } catch(e){} });
+  mileageCharts = {};
+
+  const vins = chartSelectedVins();
+  if (vins.length === 0) { container.innerHTML = '<div class="empty">No vehicle selected.</div>'; return; }
+
+  const now = Math.floor(Date.now()/1000);
+  const cutoff = chartRangeDays > 0 ? now - chartRangeDays*86400 : 0;
+
+  // Fetch + aggregate once per vehicle, then render table and chart from the same data.
+  const perVehicle = [];
+  for (const vin of vins) {
+    let sessions = [];
+    try {
+      const r = await fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${vin}&limit=2000`);
+      const d = await r.json();
+      sessions = (d.sessions || []).filter(s => s.start_ts >= cutoff && s.distance_mi > 0);
+    } catch(e) { console.log('mileage load failed', e); }
+
+    const byMonth = {};
+    sessions.forEach(s => {
+      const dt = new Date(s.start_ts*1000);
+      const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}`;
+      if (!byMonth[key]) byMonth[key] = { dist: 0, dur: 0, count: 0 };
+      byMonth[key].dist += s.distance_mi || 0;
+      byMonth[key].dur += s.duration_s || 0;
+      byMonth[key].count += 1;
+    });
+    const months = Object.keys(byMonth).sort();
+    const name = (S.vehicles.find(v=>v.vin===vin)||{}).name || 'Vehicle';
+    perVehicle.push({ vin, name, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6) });
+  }
+
+  // Build HTML sections.
+  const sections = perVehicle.map(pv => {
+    if (pv.months.length === 0) {
+      return `<div style="margin-bottom:20px;"><div style="font-weight:600; margin-bottom:8px;">${pv.name}</div><div class="empty">No drives in this period.</div></div>`;
+    }
+    const rowsHtml = pv.months.slice().reverse().map(m => {
+      const x = pv.byMonth[m];
+      const durMin = Math.round(x.dur/60);
+      const durStr = durMin>=60 ? `${Math.floor(durMin/60)}h ${durMin%60}m` : `${durMin}m`;
+      return `<tr>
+        <td style="padding:6px 12px;">${monthLabel(m)}</td>
+        <td style="padding:6px 12px; text-align:right;">${durStr}</td>
+        <td style="padding:6px 12px; text-align:right;">${Math.round(x.dist)} mi</td>
+        <td style="padding:6px 12px; text-align:right;">${x.count}</td>
+      </tr>`;
+    }).join('');
+    return `<div style="margin-bottom:24px;">
+      <div style="font-weight:600; margin-bottom:10px;">${pv.name}</div>
+      <div style="overflow-x:auto; margin-bottom:14px;">
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead><tr style="color:var(--text-soft); text-align:left; border-bottom:1px solid var(--border);">
+            <th style="padding:6px 12px; font-weight:500;">Period</th>
+            <th style="padding:6px 12px; font-weight:500; text-align:right;">Time driven</th>
+            <th style="padding:6px 12px; font-weight:500; text-align:right;">Distance</th>
+            <th style="padding:6px 12px; font-weight:500; text-align:right;"># Drives</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <div style="position:relative; height:${Math.max(180, pv.months.length*44+80)}px;"><canvas id="${pv.canvasId}"></canvas></div>
+    </div>`;
+  });
+
+  container.innerHTML = sections.join('');
+
+  // Render charts now that canvases exist.
+  perVehicle.forEach(pv => {
+    if (pv.months.length === 0) return;
+    const cv = document.getElementById(pv.canvasId);
+    if (!cv) return;
+    mileageCharts[pv.vin] = new Chart(cv.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: pv.months.map(monthLabel),
+        datasets: [
+          { label: 'Distance (mi)', data: pv.months.map(m => Math.round(pv.byMonth[m].dist)), backgroundColor: '#5BA666', yAxisID: 'y' },
+          { label: 'Drives', data: pv.months.map(m => pv.byMonth[m].count), backgroundColor: '#D4B226', yAxisID: 'y1' }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: true } },
+        scales: {
+          y:  { position: 'left',  title: { display: true, text: 'Distance (mi)' }, grid: { color: 'rgba(128,128,128,.12)' }, beginAtZero: true },
+          y1: { position: 'right', title: { display: true, text: 'Drives' }, grid: { drawOnChartArea: false }, beginAtZero: true }
+        }
+      }
+    });
+  });
+}
+
+// "2026-05" -> "2026 May"
+function monthLabel(key) {
+  const [y, m] = key.split('-');
+  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${y} ${names[parseInt(m,10)-1]}`;
 }
 
 // ---- Charging cost view ----
