@@ -2100,7 +2100,10 @@ async function showDriveRoute(idx) {
   const s = driveSessionsCache[idx];
   if (!s) return;
   const secret = localStorage.getItem('pb_proxy_secret');
-  if (!secret || !S.vehicleVin) return;
+  // Use the drive's OWN vin (set during the merge), not the globally-active car —
+  // in Both mode the active car may differ from the drive's car.
+  const vin = s._vin || S.vehicleVin;
+  if (!secret || !vin) return;
   const mapEl = document.getElementById('driveMap');
   mapEl.style.display = 'block';
 
@@ -2117,7 +2120,7 @@ async function showDriveRoute(idx) {
   }
 
   try {
-    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving/route?secret=${secret}&vin=${S.vehicleVin}&start_ts=${s.start_ts}&end_ts=${s.end_ts}`);
+    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving/route?secret=${secret}&vin=${vin}&start_ts=${s.start_ts}&end_ts=${s.end_ts}`);
     const d = await r.json();
 
     // Remove previous route
@@ -2127,7 +2130,12 @@ async function showDriveRoute(idx) {
     }
 
     if (!d.points || d.points.length === 0) {
-      mapEl.innerHTML = '<div class="empty" style="padding-top:120px;">No location points for this drive.</div>';
+      // Don't set innerHTML on the map node (it destroys the Leaflet instance).
+      // Clear any prior route and show a brief inline note instead.
+      mapEl.style.display = 'none';
+      const note = document.getElementById('driveSummary');
+      if (note) { /* leave summary intact */ }
+      console.log('No location points for drive', s.start_ts, vin);
       return;
     }
 
@@ -2154,7 +2162,8 @@ async function showDriveRoute(idx) {
     setTimeout(() => { driveMap.invalidateSize(); mapEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 100);
   } catch(e) {
     console.log('drive route load failed:', e);
-    mapEl.innerHTML = '<div class="empty" style="padding-top:120px;">Could not load route.</div>';
+    mapEl.style.display = 'none';
+    console.log('Could not load route:', e);
   }
 }
 
@@ -2211,6 +2220,10 @@ function setChartView(view, el) {
     const node = document.getElementById('chartview-' + v);
     if (node) node.style.display = (v === view) ? 'block' : 'none';
   });
+  // Drives has its own richer range selector (24h/7d/60d…); hide the shared Analytics
+  // range chips for it to avoid two stacked selectors. Show them for the other views.
+  const sharedRange = document.getElementById('chartRangeChips');
+  if (sharedRange) sharedRange.style.display = (view === 'drives') ? 'none' : 'flex';
   loadChartView();
 }
 
