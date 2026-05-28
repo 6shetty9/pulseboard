@@ -357,7 +357,10 @@ input:checked + .slider:before { transform: translateX(20px); }
       <!-- ===== Charging view ===== -->
       <div id="chartview-charging" style="display:none;">
         <div class="card">
-          <div class="card-title">🔌 Charging cost</div>
+          <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span>🔌 Charging cost</span>
+            <button onclick="exportChargingCSV()" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">↓ CSV</button>
+          </div>
           <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; margin-bottom:14px;">
             <div>
               <div style="font-size:11px; color:var(--text-soft); text-transform:uppercase; letter-spacing:.03em; margin-bottom:4px;">Home rate</div>
@@ -378,7 +381,10 @@ input:checked + .slider:before { transform: translateX(20px); }
       <!-- ===== Drives view ===== -->
       <div id="chartview-drives" style="display:none;">
         <div class="card">
-          <div class="card-title">🚗 Drive history</div>
+          <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span>🚗 Drive history</span>
+            <button onclick="exportDrivesCSV()" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">↓ CSV</button>
+          </div>
           <div id="driveRangeChips" style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
             <button class="chip" onclick="setDriveRange(1,this)">24h</button>
             <button class="chip chip-active" onclick="setDriveRange(7,this)">7d</button>
@@ -1999,6 +2005,107 @@ async function loadChargeChart() {
   } catch(e) { console.log('chart load failed:', e); }
 }
 
+// ---- CSV export ----
+// Quote a value for CSV: wrap in double-quotes if it contains comma/quote/newline,
+// and escape embedded quotes by doubling them (RFC 4180). Numbers and bools pass
+// through as strings; null/undefined become empty.
+function csvEscape(v) {
+  if (v == null) return '';
+  const s = String(v);
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+// Build a CSV string from an array of row objects + a column spec.
+// columns is an array of { header, key } or { header, get: row => value }.
+function toCSV(rows, columns) {
+  const lines = [columns.map(c => csvEscape(c.header)).join(',')];
+  for (const row of rows) {
+    lines.push(columns.map(c => {
+      const v = c.get ? c.get(row) : row[c.key];
+      return csvEscape(v);
+    }).join(','));
+  }
+  return lines.join('\n');
+}
+
+// Trigger a browser download of the given text as a file. Uses Blob + objectURL
+// + a synthetic <a> click; no bridge changes needed.
+function downloadFile(filename, text, mime='text/csv;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Format a Unix-seconds timestamp as a local ISO-ish string suitable for CSV.
+function csvTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// Look up a vehicle's display name from VIN; fall back to last-6 of the VIN.
+function vinNameFor(vin) {
+  return ((S.vehicles||[]).find(v => v.vin === vin)||{}).name || ('VIN-' + (vin||'').slice(-6));
+}
+
+// Export the currently-displayed Drive History as CSV.
+function exportDrivesCSV() {
+  const rows = driveSessionsCache || [];
+  if (rows.length === 0) { alert('No drives to export in the current view.'); return; }
+  const columns = [
+    { header: 'Start',           get: r => csvTime(r.start_ts) },
+    { header: 'End',             get: r => csvTime(r.end_ts) },
+    { header: 'Vehicle',         get: r => vinNameFor(r._vin) },
+    { header: 'From',            key: 'start_place' },
+    { header: 'To',              key: 'end_place' },
+    { header: 'Distance (mi)',   get: r => (r.distance_mi != null ? r.distance_mi.toFixed(2) : '') },
+    { header: 'Duration (s)',    key: 'duration_s' },
+    { header: 'Start SOC (%)',   get: r => (r.start_soc != null ? r.start_soc.toFixed(1) : '') },
+    { header: 'End SOC (%)',     get: r => (r.end_soc != null ? r.end_soc.toFixed(1) : '') },
+    { header: 'SOC delta (%)',   get: r => (r.soc_delta != null ? r.soc_delta.toFixed(2) : '') },
+    { header: 'Energy (kWh)',    get: r => (r.energy_used_kwh != null ? r.energy_used_kwh.toFixed(2) : '') },
+    { header: 'Efficiency (Wh/mi)', get: r => (r.wh_per_mi != null ? Math.round(r.wh_per_mi) : '') },
+    { header: 'Avg speed (mph)', get: r => (r.avg_speed_mph != null ? r.avg_speed_mph.toFixed(1) : '') },
+    { header: 'Max speed (mph)', get: r => (r.max_speed_mph != null ? r.max_speed_mph.toFixed(1) : '') },
+    { header: 'Avg temp (F)',    get: r => (r.avg_temp_f != null ? r.avg_temp_f.toFixed(1) : '') },
+  ];
+  const stamp = new Date().toISOString().slice(0,10);
+  downloadFile(`pulseboard-drives-${stamp}.csv`, toCSV(rows, columns));
+}
+
+// Export the currently-displayed Charging sessions as CSV.
+function exportChargingCSV() {
+  const rows = chargingSessionsCache || [];
+  if (rows.length === 0) { alert('No charging sessions to export in the current view.'); return; }
+  const columns = [
+    { header: 'Start',           get: r => csvTime(r.start_ts) },
+    { header: 'End',             get: r => csvTime(r.end_ts) },
+    { header: 'Vehicle',         get: r => vinNameFor(r._vin) },
+    { header: 'Location',        key: 'location_name' },
+    { header: 'Is home',         get: r => r.is_home ? 'yes' : 'no' },
+    { header: 'Duration (s)',    key: 'duration_s' },
+    { header: 'Start SOC (%)',   get: r => (r.start_soc != null ? r.start_soc.toFixed(1) : '') },
+    { header: 'End SOC (%)',     get: r => (r.end_soc != null ? r.end_soc.toFixed(1) : '') },
+    { header: 'SOC delta (%)',   get: r => (r.soc_delta != null ? r.soc_delta.toFixed(2) : '') },
+    { header: 'Energy (kWh)',    get: r => (r.energy_kwh != null ? r.energy_kwh.toFixed(2) : '') },
+    { header: 'Rate ($/kWh)',    get: r => (r.rate_used != null ? r.rate_used.toFixed(3) : '') },
+    { header: 'Cost ($)',        get: r => (r.cost != null ? r.cost.toFixed(2) : '') },
+    { header: 'Override',        get: r => (r.home_override == null ? 'auto' : r.home_override === 1 ? 'manual home' : 'manual away') },
+  ];
+  const stamp = new Date().toISOString().slice(0,10);
+  downloadFile(`pulseboard-charging-${stamp}.csv`, toCSV(rows, columns));
+}
+
 // ---- Drive history ----
 let driveMap = null;
 let driveRouteLayer = null;
@@ -2407,6 +2514,10 @@ function monthLabel(key) {
 }
 
 // ---- Charging cost view ----
+// Cache of the currently-displayed charging sessions, kept in sync with what
+// loadCharging() rendered. Used by the CSV export button.
+let chargingSessionsCache = [];
+
 async function saveChargeRates() {
   const secret = localStorage.getItem('pb_proxy_secret');
   const home = parseFloat(document.getElementById('rateHome').value) || 0;
@@ -2460,6 +2571,7 @@ async function loadCharging() {
   const now = Math.floor(Date.now()/1000);
   const cutoff = chartRangeDays > 0 ? now - chartRangeDays*86400 : 0;
   all = all.filter(s => s.start_ts >= cutoff).sort((a,b) => b.start_ts - a.start_ts);
+  chargingSessionsCache = all;
 
   if (all.length === 0) {
     listEl.innerHTML = '<div class="empty">No charging sessions in this period.</div>';
