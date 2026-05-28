@@ -1772,11 +1772,60 @@ function updateChDetail(ch) {
 function saveCfg() {
   S.cfg = { poUser:document.getElementById('poUser').value, poToken:document.getElementById('poToken').value, twSid:document.getElementById('twSid').value, twToken:document.getElementById('twToken').value, twFrom:document.getElementById('twFrom').value, twTo:document.getElementById('twTo').value, sgKey:document.getElementById('sgKey').value, sgFrom:document.getElementById('sgFrom').value, sgTo:document.getElementById('sgTo').value };
   ['pushover','sms','email'].forEach(updateChDetail); save();
+  // Sync Pushover credentials to the bridge — single source of truth (Option A).
+  // Twilio/SendGrid stay browser-only since the bridge doesn't use them.
+  syncPushoverToBridge(S.cfg.poUser, S.cfg.poToken);
 }
 function loadCfgToForm() {
   const c = S.cfg; if (!c) return;
   ['poUser','poToken','twSid','twToken','twFrom','twTo','sgKey','sgFrom','sgTo'].forEach(id => { const el=document.getElementById(id); if(el&&c[id]) el.value=c[id]; });
   ['pushover','sms','email'].forEach(ch => { const t=document.getElementById(ch+'Toggle'); if(t) t.className='toggle '+(S.channels[ch]?'on':'off'); updateChDetail(ch); });
+  // After populating from localStorage, fetch authoritative Pushover credentials
+  // from the bridge — if the bridge has different values, they win.
+  loadPushoverFromBridge();
+}
+
+// Fetch Pushover credentials from the bridge (the source of truth) and populate
+// the form. Called after loadCfgToForm so the bridge value overrides any stale
+// localStorage value. Silent on failure — the form stays usable from localStorage.
+async function loadPushoverFromBridge() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/notify/config?secret=${secret}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    // Update form inputs if the user isn't currently editing them.
+    const uEl = document.getElementById('poUser'), tEl = document.getElementById('poToken');
+    if (uEl && document.activeElement !== uEl) uEl.value = d.user_key || '';
+    if (tEl && document.activeElement !== tEl) tEl.value = d.app_token || '';
+    // Update in-memory state and refresh the "Not configured" / "Configured" pill.
+    if (!S.cfg) S.cfg = {};
+    S.cfg.poUser = d.user_key || '';
+    S.cfg.poToken = d.app_token || '';
+    save();
+    updateChDetail('pushover');
+  } catch(e) { /* silent */ }
+}
+
+// Push Pushover credentials to the bridge so server-side alerts (out-of-park,
+// geofence arrivals/departures) use the same values as the browser. Debounced —
+// the input handlers call saveCfg on every keystroke; we batch into one POST
+// 500ms after the user stops typing. Silent on failure.
+let pushoverSyncTimer = null;
+async function syncPushoverToBridge(userKey, appToken) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  clearTimeout(pushoverSyncTimer);
+  pushoverSyncTimer = setTimeout(async () => {
+    try {
+      await fetch(`${BRIDGE_BASE}/notify/config?secret=${secret}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_key: userKey || '', app_token: appToken || '' })
+      });
+    } catch(e) { /* silent */ }
+  }, 500);
 }
 function setDeterrent(mode) {
   S.deterrentMode = mode;
