@@ -663,14 +663,24 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div class="row"><span class="row-label">Sentry turns off unexpectedly</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
         <div class="row"><span class="row-label">Sentry camera event</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
         <div class="row">
-          <span class="row-label">Sentry deterrent</span>
+          <span class="row-label">Tier 1 deterrent <span style="font-size:11px; color:var(--hint);">(movement)</span></span>
           <span class="row-val">
-            <select id="deterrentSelect" onchange="setDeterrent(this.value)" style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);">
-              <option value="off">Off</option>
+            <select id="deterrentTier1" onchange="setDeterrentTier(1,this.value)" style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);">
+              <option value="off">Off (alerts only)</option>
               <option value="flash">💡 Flash lights</option>
               <option value="honk">📯 Honk horn</option>
-              <option value="all">💡📯 Both</option>
-              <option value="fart">💨 Fart (may not work)</option>
+              <option value="both">💡📯 Both</option>
+            </select>
+          </span>
+        </div>
+        <div class="row">
+          <span class="row-label">Tier 2 deterrent <span style="font-size:11px; color:var(--hint);">(door forced)</span></span>
+          <span class="row-val">
+            <select id="deterrentTier2" onchange="setDeterrentTier(2,this.value)" style="padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);">
+              <option value="off">Off (alerts only)</option>
+              <option value="flash">💡 Flash lights</option>
+              <option value="honk">📯 Honk horn</option>
+              <option value="both">💡📯 Both</option>
             </select>
           </span>
         </div>
@@ -701,7 +711,7 @@ const API = PROXY + '/api/1';
 const LOCAL_PROXY = 'https://6shetty9.com:8080/api/1'; // DigitalOcean CORS proxy → tesla-http-proxy
 
 let S = {
-  token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [], vehicleWasAsleep: false, fartOnSentry: true, deterrentMode: 'flash',
+  token: null, refresh: null, vehicleId: null, vehicleVin: null, vehicleName: null, vehicles: [], vehicleWasAsleep: false, deterrentTier1: 'off', deterrentTier2: 'flash',
   monitoring: false, pollTimer: null, countdownTimer: null, countdown: 60,
   eventCount: 0, sentryOn: false, alerts: [],
   channels: { pushover: false, sms: false, email: false }, cfg: {}, kwhRate: null
@@ -893,9 +903,7 @@ async function handleTelemetryEvent(evt) {
     // Real-time threat detection (only for currently selected vehicle)
     if (evt.vin === S.vehicleVin) {
       const state = pbLiveStateByVin[evt.vin];
-      const isLocked = pbBool(state.Locked) === true;
       const isParked = state.Gear === 'ShiftStateP' || !state.Gear;
-      const deterrentEnabled = S.fartOnSentry !== false && S.deterrentMode !== 'off';
 
       // Passive-state alerts (only while monitoring is on, to match old poll behavior).
       // These fire on state CHANGE so they don't repeat every telemetry tick.
@@ -927,63 +935,19 @@ async function handleTelemetryEvent(evt) {
         }
       }
 
-      // Tier 1: Sentry detected movement (someone near the car)
-      if ('SentryMode' in evt.fields) {
-        const aware = evt.fields.SentryMode === 'SentryModeStateAware';
-        if (aware && !state._motionCooldown) {
-          state._motionCooldown = true;
-          setTimeout(() => { state._motionCooldown = false; }, 30000);
-          await fireAlert('motion','👀 Movement detected','Someone is near the car','warn');
-          if (deterrentEnabled) {
-            try {
-              await cmdApi(`/vehicles/${S.vehicleVin}/command/flash_lights`, 'POST');
-            } catch(e) { console.log('Flash failed:', e); }
-          }
-        }
-      }
-      
-      // Tier 2: Door opened while locked + parked (active break-in attempt)
-      if ('DoorState' in evt.fields) {
-        const ds = evt.fields.DoorState;
-        const anyDoorOpen = ds && (ds.DriverFront || ds.PassengerFront || ds.DriverRear || ds.PassengerRear || ds.TrunkFront || ds.TrunkRear);
-        if (anyDoorOpen && isLocked && isParked && !state._breachCooldown) {
-          state._breachCooldown = true;
-          setTimeout(() => { state._breachCooldown = false; }, 60000);
-          const which = [];
-          if (ds.DriverFront) which.push('driver front');
-          if (ds.PassengerFront) which.push('passenger front');
-          if (ds.DriverRear) which.push('driver rear');
-          if (ds.PassengerRear) which.push('passenger rear');
-          if (ds.TrunkFront) which.push('frunk');
-          if (ds.TrunkRear) which.push('trunk');
-          await fireAlert('breach','🚨 Door opened while locked!',`${which.join(', ')}`,'err');
-          if (deterrentEnabled) {
-            try {
-              await cmdApi(`/vehicles/${S.vehicleVin}/command/honk_horn`, 'POST');
-              await cmdApi(`/vehicles/${S.vehicleVin}/command/flash_lights`, 'POST');
-            } catch(e) { console.log('Deterrent failed:', e); }
-          }
-        }
-      }
+      // NOTE: Tier 1 (movement) and Tier 2 (door-while-locked) detection used
+      // to live here. As of May 2026 the bridge (sentry.go) detects these
+      // server-side and fires Pushover + deterrent commands directly. The old
+      // browser-side detection was removed to avoid double-firing.
     }
   }
 }
 
 async function triggerDeterrent(reason) {
-  const mode = S.deterrentMode || 'flash';
-  try {
-    if (mode === 'flash' || mode === 'all') {
-      await cmdApi(`/vehicles/${S.vehicleVin}/command/flash_lights`, 'POST');
-    }
-    if (mode === 'honk' || mode === 'all') {
-      await cmdApi(`/vehicles/${S.vehicleVin}/command/honk_horn`, 'POST');
-    }
-    if (mode === 'fart') {
-      await cmdApi(`/vehicles/${S.vehicleVin}/command/remote_boombox`, 'POST', { sound: 0 });
-    }
-    const labels = { flash: '💡 Lights flashed', honk: '📯 Horn honked', all: '💡📯 Lights + horn', fart: '💨 Fart attempted' };
-    await fireAlert('deterrent', labels[mode] || 'Deterrent fired', reason, 'warn');
-  } catch(e) { console.log('Deterrent failed:', e); }
+  // Stubbed May 2026 — deterrent actions are now triggered server-side by
+  // sentry.go based on the per-tier action config. This function is kept as a
+  // no-op so any lingering callers (e.g. the old pollVehicle path) don't break.
+  console.log('triggerDeterrent called but no-op (bridge handles deterrent):', reason);
 }
 
 const TELEMETRY_CATEGORIES = {
@@ -1594,8 +1558,7 @@ async function pollVehicle() {
       const isParked = !d.drive_state?.shift_state || d.drive_state?.shift_state === 'P';
       if (wasAsleep && isParked && vs.sentry_mode) {
         await fireAlert('camera','⚠ Sentry event detected!','Vehicle woke up while parked — possible security threat','err');
-        // 💨 Deploy fart as intruder deterrent
-        if (S.fartOnSentry) await triggerDeterrent('Sentry camera event detected');
+        // Deterrent action is handled server-side now (sentry.go).
       } else {
         await fireAlert('heartbeat','Sentry heartbeat','Sentry active, vehicle secured','ok');
       }
@@ -1819,6 +1782,7 @@ function loadCfgToForm() {
   // After populating from localStorage, fetch authoritative Pushover credentials
   // from the bridge — if the bridge has different values, they win.
   loadPushoverFromBridge();
+  loadDeterrentFromBridge();
 }
 
 // Fetch Pushover credentials from the bridge (the source of truth) and populate
@@ -1863,10 +1827,53 @@ async function syncPushoverToBridge(userKey, appToken) {
     } catch(e) { /* silent */ }
   }, 500);
 }
-function setDeterrent(mode) {
-  S.deterrentMode = mode;
-  S.fartOnSentry = mode !== 'off';
+// Per-tier deterrent — bridge is source of truth (sentry.go on droplet).
+// setDeterrentTier writes the active selector value back to the bridge so
+// future Tier 1/Tier 2 events use the new action immediately. Debounced
+// lightly so rapid changes don't spam the bridge.
+let deterrentSyncTimer = null;
+function setDeterrentTier(tier, action) {
+  // Mirror in-memory for quick UI feedback (read by loadCfgToForm too).
+  if (tier === 1) S.deterrentTier1 = action;
+  else if (tier === 2) S.deterrentTier2 = action;
   save();
+  clearTimeout(deterrentSyncTimer);
+  deterrentSyncTimer = setTimeout(() => syncDeterrentToBridge(), 400);
+}
+
+// Fetch the bridge's current deterrent config and populate the selectors.
+// Called from loadCfgToForm so the form always shows what the BRIDGE has,
+// not stale localStorage.
+async function loadDeterrentFromBridge() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/deterrent/config?secret=${secret}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const t1 = document.getElementById('deterrentTier1');
+    const t2 = document.getElementById('deterrentTier2');
+    if (t1 && document.activeElement !== t1) t1.value = d.tier1_action || 'off';
+    if (t2 && document.activeElement !== t2) t2.value = d.tier2_action || 'flash';
+    S.deterrentTier1 = d.tier1_action || 'off';
+    S.deterrentTier2 = d.tier2_action || 'flash';
+    save();
+  } catch(e) { /* silent */ }
+}
+
+// Push the current selector values to the bridge.
+async function syncDeterrentToBridge() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  const t1 = (document.getElementById('deterrentTier1')||{}).value || S.deterrentTier1 || 'off';
+  const t2 = (document.getElementById('deterrentTier2')||{}).value || S.deterrentTier2 || 'flash';
+  try {
+    await fetch(`${BRIDGE_BASE}/deterrent/config?secret=${secret}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier1_action: t1, tier2_action: t2 })
+    });
+  } catch(e) { /* silent */ }
 }
 
 function toggleSentry() {
@@ -4317,11 +4324,8 @@ async function loadOutOfParkAlert() {
   }
 }
 
-// Initialize deterrent selector state
-setTimeout(() => {
-  const ds = document.getElementById('deterrentSelect');
-  if (ds) ds.value = S.fartOnSentry === false ? 'off' : (S.deterrentMode || 'flash');
-}, 100);
+// Deterrent selectors are populated by loadDeterrentFromBridge() inside
+// loadCfgToForm(); no separate initialization needed.
 </script>
 </body>
 </html>
