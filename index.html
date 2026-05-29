@@ -2471,7 +2471,7 @@ async function loadMileage() {
     });
     const months = Object.keys(byMonth).sort();
     const name = (S.vehicles.find(v=>v.vin===vin)||{}).name || 'Vehicle';
-    perVehicle.push({ vin, name, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6) });
+    perVehicle.push({ vin, name, sessions, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6) });
   }
 
   // Build HTML sections.
@@ -2492,6 +2492,7 @@ async function loadMileage() {
     }).join('');
     return `<div style="margin-bottom:24px;">
       <div style="font-weight:600; margin-bottom:10px;">${pv.name}</div>
+      ${renderMileageStatsTiles(pv.sessions, cutoff, now)}
       <div style="overflow-x:auto; margin-bottom:14px;">
         <table style="width:100%; border-collapse:collapse; font-size:13px;">
           <thead><tr style="color:var(--text-soft); text-align:left; border-bottom:1px solid var(--border);">
@@ -2540,6 +2541,82 @@ function monthLabel(key) {
   const [y, m] = key.split('-');
   const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return `${y} ${names[parseInt(m,10)-1]}`;
+}
+
+// Render a 9-tile stats grid summarizing a vehicle's drives over the range.
+// Pure function: takes the filtered drive sessions and the range bounds.
+// Numbers are rounded for display; energy is the algebraic sum of energy_used_kwh
+// (positive = net consumed, negative = net regenerated — rare overall).
+function renderMileageStatsTiles(sessions, cutoff, now) {
+  if (!sessions || sessions.length === 0) {
+    return ''; // The caller already shows an empty state if needed.
+  }
+
+  // --- Basic aggregates -----------------------------------------------------
+  const driveCount = sessions.length;
+  let totalDist = 0, totalEnergy = 0;
+  let overallMaxSpeed = 0;
+  const distances = [];
+  for (const s of sessions) {
+    totalDist  += (s.distance_mi  || 0);
+    totalEnergy += (s.energy_used_kwh || 0);
+    if (s.max_speed_mph != null && s.max_speed_mph > overallMaxSpeed) overallMaxSpeed = s.max_speed_mph;
+    if (s.distance_mi > 0) distances.push(s.distance_mi);
+  }
+
+  // --- Median drive distance ------------------------------------------------
+  distances.sort((a,b) => a-b);
+  const medianDist = distances.length === 0 ? 0
+    : (distances.length % 2 === 0
+        ? (distances[distances.length/2 - 1] + distances[distances.length/2]) / 2
+        : distances[(distances.length-1)/2]);
+
+  // --- "Per day" averages ---------------------------------------------------
+  // Use the range span if a finite range is selected; for "All", use the span
+  // from the earliest drive to now. Both treat non-driving days as 0 mi, which
+  // matches "true daily average across the period" rather than "average on
+  // days you drove" (the latter would over-state usage for occasional drivers).
+  let spanSeconds;
+  if (cutoff > 0) {
+    spanSeconds = now - cutoff;
+  } else {
+    const earliest = Math.min(...sessions.map(s => s.start_ts));
+    spanSeconds = Math.max(86400, now - earliest);
+  }
+  const spanDays = spanSeconds / 86400;
+  const distPerDay = spanDays > 0 ? totalDist / spanDays : 0;
+  const energyPerDay = spanDays > 0 ? totalEnergy / spanDays : 0;
+
+  // --- Max speed in 30-day and 7-day windows --------------------------------
+  const cutoff30 = now - 30*86400;
+  const cutoff7  = now -  7*86400;
+  const maxSpeed30 = Math.max(0, ...sessions.filter(s => s.start_ts >= cutoff30).map(s => s.max_speed_mph || 0));
+  const maxSpeed7  = Math.max(0, ...sessions.filter(s => s.start_ts >= cutoff7).map(s => s.max_speed_mph || 0));
+
+  // --- Extrapolated monthly / annual mileage --------------------------------
+  const extMonth = distPerDay * 30;
+  const extYear  = distPerDay * 365;
+
+  // --- Render the tile grid -------------------------------------------------
+  const tile = (label, value, sub='') => `
+    <div style="background:rgba(128,128,128,.05); border:1px solid var(--border); border-radius:6px; padding:10px 12px;">
+      <div style="font-size:11px; color:var(--text-soft); margin-bottom:4px;">${label}</div>
+      <div style="font-size:18px; font-weight:600;">${value}${sub ? `<span style="font-size:11px; color:var(--text-soft); font-weight:400;"> ${sub}</span>` : ''}</div>
+    </div>`;
+
+  return `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:8px; margin-bottom:14px;">
+    ${tile('# of drives',          driveCount)}
+    ${tile('Total distance',       Math.round(totalDist).toLocaleString(), 'mi')}
+    ${tile('Total energy (net)',   totalEnergy.toFixed(0), 'kWh')}
+    ${tile('Median drive',         medianDist.toFixed(2), 'mi')}
+    ${tile('Ø distance / day',     distPerDay.toFixed(1), 'mi')}
+    ${tile('Ø energy / day',       energyPerDay.toFixed(1), 'kWh')}
+    ${tile('Max speed (overall)',  overallMaxSpeed.toFixed(0), 'mph')}
+    ${tile('Max speed (30d)',      maxSpeed30.toFixed(0), 'mph')}
+    ${tile('Max speed (7d)',       maxSpeed7.toFixed(0), 'mph')}
+    ${tile('Extrap. monthly',      Math.round(extMonth).toLocaleString(), 'mi')}
+    ${tile('Extrap. annual',       Math.round(extYear).toLocaleString(), 'mi')}
+  </div>`;
 }
 
 // ---- Battery patterns view ----
