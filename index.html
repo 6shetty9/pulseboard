@@ -312,6 +312,8 @@ input:checked + .slider:before { transform: translateX(20px); }
           <div id="chartCarToggle" style="display:flex; gap:6px;"></div>
         </div>
         <div id="chartRangeChips" style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+          <button class="chip" onclick="setChartRange(1,this)">24h</button>
+          <button class="chip" onclick="setChartRange(7,this)">7d</button>
           <button class="chip" onclick="setChartRange(30,this)">30d</button>
           <button class="chip chip-active" onclick="setChartRange(90,this)">90d</button>
           <button class="chip" onclick="setChartRange(365,this)">1y</button>
@@ -2434,6 +2436,12 @@ function loadChartView() {
 
 // ---- Mileage stats (per month, per vehicle) ----
 let mileageCharts = {}; // vin -> Chart instance, so we can destroy on reload
+let mileageBothMode = 'combined'; // 'combined' (stacked per-vehicle) or 'compare' (side-by-side tiles)
+
+function setMileageBothMode(mode) {
+  mileageBothMode = mode;
+  loadMileage();
+}
 
 async function loadMileage() {
   const secret = localStorage.getItem('pb_proxy_secret');
@@ -2471,8 +2479,26 @@ async function loadMileage() {
     });
     const months = Object.keys(byMonth).sort();
     const name = (S.vehicles.find(v=>v.vin===vin)||{}).name || 'Vehicle';
-    perVehicle.push({ vin, name, sessions, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6) });
+    perVehicle.push({ vin, name, sessions, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6), odoCanvasId: 'odoChart_' + vin.slice(-6) });
   }
+
+  const rangeLabel = rangeLabelFor(chartRangeDays);
+  // Both is "active" when 2+ vehicles ended up in perVehicle AND both have data.
+  // The compare toggle appears only in that case.
+  const bothActive = perVehicle.length >= 2 && perVehicle.some(p => p.months.length > 0);
+
+  // Compare-mode tile grid header (only when bothActive AND compare mode chosen).
+  const compareHeader = bothActive ? `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:12px;">
+      <span style="color:var(--text-soft);">Both mode:</span>
+      <button class="chip ${mileageBothMode==='combined'?'chip-active':''}" onclick="setMileageBothMode('combined')">📊 Combined</button>
+      <button class="chip ${mileageBothMode==='compare'?'chip-active':''}" onclick="setMileageBothMode('compare')">🔀 Compare</button>
+    </div>` : '';
+
+  // Compare-mode summary tiles (single grid spanning both vehicles).
+  const compareTiles = (bothActive && mileageBothMode === 'compare')
+    ? renderMileageStatsCompare(perVehicle, cutoff, now, chartRangeDays, rangeLabel)
+    : '';
 
   // Build HTML sections.
   const sections = perVehicle.map(pv => {
@@ -2490,9 +2516,16 @@ async function loadMileage() {
         <td style="padding:6px 12px; text-align:right;">${x.count}</td>
       </tr>`;
     }).join('');
+    // In compare mode we DON'T render per-vehicle tile grids — the compare grid
+    // at the top already shows the headline numbers for both cars. We keep the
+    // per-vehicle tables + bar chart + odometer chart since those drill-downs
+    // are more useful per-car than side-by-side.
+    const perVehicleTiles = (bothActive && mileageBothMode === 'compare')
+      ? ''
+      : renderMileageStatsTiles(pv.sessions, cutoff, now, chartRangeDays, rangeLabel);
     return `<div style="margin-bottom:24px;">
       <div style="font-weight:600; margin-bottom:10px;">${pv.name}</div>
-      ${renderMileageStatsTiles(pv.sessions, cutoff, now)}
+      ${perVehicleTiles}
       <div style="overflow-x:auto; margin-bottom:14px;">
         <table style="width:100%; border-collapse:collapse; font-size:13px;">
           <thead><tr style="color:var(--text-soft); text-align:left; border-bottom:1px solid var(--border);">
@@ -2505,34 +2538,85 @@ async function loadMileage() {
         </table>
       </div>
       <div style="position:relative; height:${Math.max(180, pv.months.length*44+80)}px;"><canvas id="${pv.canvasId}"></canvas></div>
+      <div style="font-size:13px; font-weight:500; margin:14px 0 6px; color:var(--text-soft);">📈 Odometer over time</div>
+      <div style="position:relative; height:220px;"><canvas id="${pv.odoCanvasId}"></canvas></div>
     </div>`;
   });
 
-  container.innerHTML = sections.join('');
+  container.innerHTML = compareHeader + compareTiles + sections.join('');
 
   // Render charts now that canvases exist.
   perVehicle.forEach(pv => {
     if (pv.months.length === 0) return;
     const cv = document.getElementById(pv.canvasId);
-    if (!cv) return;
-    mileageCharts[pv.vin] = new Chart(cv.getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels: pv.months.map(monthLabel),
-        datasets: [
-          { label: 'Distance (mi)', data: pv.months.map(m => Math.round(pv.byMonth[m].dist)), backgroundColor: '#5BA666', yAxisID: 'y' },
-          { label: 'Drives', data: pv.months.map(m => pv.byMonth[m].count), backgroundColor: '#D4B226', yAxisID: 'y1' }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: true } },
-        scales: {
-          y:  { position: 'left',  title: { display: true, text: 'Distance (mi)' }, grid: { color: 'rgba(128,128,128,.12)' }, beginAtZero: true },
-          y1: { position: 'right', title: { display: true, text: 'Drives' }, grid: { drawOnChartArea: false }, beginAtZero: true }
+    if (cv) {
+      mileageCharts[pv.vin] = new Chart(cv.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: pv.months.map(monthLabel),
+          datasets: [
+            { label: 'Distance (mi)', data: pv.months.map(m => Math.round(pv.byMonth[m].dist)), backgroundColor: '#5BA666', yAxisID: 'y' },
+            { label: 'Drives', data: pv.months.map(m => pv.byMonth[m].count), backgroundColor: '#D4B226', yAxisID: 'y1' }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: true } },
+          scales: {
+            y:  { position: 'left',  title: { display: true, text: 'Distance (mi)' }, grid: { color: 'rgba(128,128,128,.12)' }, beginAtZero: true },
+            y1: { position: 'right', title: { display: true, text: 'Drives' }, grid: { drawOnChartArea: false }, beginAtZero: true }
+          }
         }
-      }
-    });
+      });
+    }
+    // Fire-and-forget odometer chart fetch + render (async; doesn't block bar chart).
+    renderOdometerChart(pv.vin, pv.odoCanvasId, cutoff, now);
+  });
+}
+
+// Async helper: fetch Odometer history for a vehicle over the active range and
+// render it as a monotone-increasing line chart. Independent of the main render
+// so a slow /history call doesn't block the rest of the Mileage tab.
+async function renderOdometerChart(vin, canvasId, cutoff, now) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  let points = [];
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/history?secret=${secret}&vin=${vin}&field=Odometer&from=${cutoff}&to=${now}&limit=20000`);
+    const d = await r.json();
+    points = (d.points || []).map(p => ({ x: p.ts*1000, y: p.val })).filter(p => p.y != null && p.y > 0);
+  } catch(e) { console.log('odometer history fetch failed', e); }
+
+  const cv = document.getElementById(canvasId);
+  if (!cv) return;
+  // Destroy any existing chart on this canvas before re-rendering.
+  if (mileageCharts[vin + '_odo']) { try { mileageCharts[vin + '_odo'].destroy(); } catch(e){} }
+  if (points.length === 0) {
+    cv.parentElement.innerHTML = '<div class="empty" style="height:100%; display:flex; align-items:center; justify-content:center;">No odometer data in this range.</div>';
+    return;
+  }
+  mileageCharts[vin + '_odo'] = new Chart(cv.getContext('2d'), {
+    type: 'line',
+    data: { datasets: [{
+      label: 'Odometer (mi)',
+      data: points,
+      borderColor: '#5BA666',
+      backgroundColor: 'rgba(91,166,102,0.15)',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0,
+      fill: true,
+    }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => `${Math.round(ctx.parsed.y).toLocaleString()} mi` } },
+      },
+      scales: {
+        x: { type: 'time', time: { unit: chartRangeDays >= 90 ? 'week' : 'day' }, grid: { color: 'rgba(128,128,128,.08)' } },
+        y: { ticks: { callback: v => Math.round(v).toLocaleString() + ' mi' }, grid: { color: 'rgba(128,128,128,.12)' } },
+      },
+    },
   });
 }
 
@@ -2547,35 +2631,32 @@ function monthLabel(key) {
 // Pure function: takes the filtered drive sessions and the range bounds.
 // Numbers are rounded for display; energy is the algebraic sum of energy_used_kwh
 // (positive = net consumed, negative = net regenerated — rare overall).
-function renderMileageStatsTiles(sessions, cutoff, now) {
-  if (!sessions || sessions.length === 0) {
-    return ''; // The caller already shows an empty state if needed.
-  }
+// Compute mileage stats for a set of drive sessions over a range.
+// Pure function — no DOM. Returns an object with all the headline numbers.
+function computeMileageStats(sessions, cutoff, now) {
+  const out = {
+    driveCount: 0, totalDist: 0, totalEnergy: 0,
+    medianDist: 0, distPerDay: 0, energyPerDay: 0,
+    maxOverall: 0, max30: 0, max7: 0,
+    extMonth: 0, extYear: 0,
+  };
+  if (!sessions || sessions.length === 0) return out;
 
-  // --- Basic aggregates -----------------------------------------------------
-  const driveCount = sessions.length;
-  let totalDist = 0, totalEnergy = 0;
-  let overallMaxSpeed = 0;
   const distances = [];
   for (const s of sessions) {
-    totalDist  += (s.distance_mi  || 0);
-    totalEnergy += (s.energy_used_kwh || 0);
-    if (s.max_speed_mph != null && s.max_speed_mph > overallMaxSpeed) overallMaxSpeed = s.max_speed_mph;
+    out.driveCount += 1;
+    out.totalDist += (s.distance_mi || 0);
+    out.totalEnergy += (s.energy_used_kwh || 0);
+    if (s.max_speed_mph != null && s.max_speed_mph > out.maxOverall) out.maxOverall = s.max_speed_mph;
     if (s.distance_mi > 0) distances.push(s.distance_mi);
   }
 
-  // --- Median drive distance ------------------------------------------------
   distances.sort((a,b) => a-b);
-  const medianDist = distances.length === 0 ? 0
+  out.medianDist = distances.length === 0 ? 0
     : (distances.length % 2 === 0
         ? (distances[distances.length/2 - 1] + distances[distances.length/2]) / 2
         : distances[(distances.length-1)/2]);
 
-  // --- "Per day" averages ---------------------------------------------------
-  // Use the range span if a finite range is selected; for "All", use the span
-  // from the earliest drive to now. Both treat non-driving days as 0 mi, which
-  // matches "true daily average across the period" rather than "average on
-  // days you drove" (the latter would over-state usage for occasional drivers).
   let spanSeconds;
   if (cutoff > 0) {
     spanSeconds = now - cutoff;
@@ -2584,39 +2665,113 @@ function renderMileageStatsTiles(sessions, cutoff, now) {
     spanSeconds = Math.max(86400, now - earliest);
   }
   const spanDays = spanSeconds / 86400;
-  const distPerDay = spanDays > 0 ? totalDist / spanDays : 0;
-  const energyPerDay = spanDays > 0 ? totalEnergy / spanDays : 0;
+  out.distPerDay = spanDays > 0 ? out.totalDist / spanDays : 0;
+  out.energyPerDay = spanDays > 0 ? out.totalEnergy / spanDays : 0;
+  out.extMonth = out.distPerDay * 30;
+  out.extYear  = out.distPerDay * 365;
 
-  // --- Max speed in 30-day and 7-day windows --------------------------------
   const cutoff30 = now - 30*86400;
   const cutoff7  = now -  7*86400;
-  const maxSpeed30 = Math.max(0, ...sessions.filter(s => s.start_ts >= cutoff30).map(s => s.max_speed_mph || 0));
-  const maxSpeed7  = Math.max(0, ...sessions.filter(s => s.start_ts >= cutoff7).map(s => s.max_speed_mph || 0));
+  out.max30 = Math.max(0, ...sessions.filter(s => s.start_ts >= cutoff30).map(s => s.max_speed_mph || 0));
+  out.max7  = Math.max(0, ...sessions.filter(s => s.start_ts >= cutoff7).map(s => s.max_speed_mph || 0));
+  return out;
+}
 
-  // --- Extrapolated monthly / annual mileage --------------------------------
-  const extMonth = distPerDay * 30;
-  const extYear  = distPerDay * 365;
+// Build the adaptive list of tile specs for a single-vehicle view.
+// `rangeDays` is the active chart range (0 = "All", treated as > 30 here).
+// Returns an array of {label, value, sub} ready to render. The Max speed tiles
+// are filtered so we never show a fixed-window tile that's narrower than (or
+// equal to) the active range — that would either duplicate the "range" tile or
+// show data outside the visible range.
+function buildMileageTileSpecs(stats, rangeDays, rangeLabel) {
+  const tiles = [
+    { label: '# of drives',          value: stats.driveCount, sub: '' },
+    { label: 'Total distance',       value: Math.round(stats.totalDist).toLocaleString(), sub: 'mi' },
+    { label: 'Total energy (net)',   value: stats.totalEnergy.toFixed(0), sub: 'kWh' },
+    { label: 'Median drive',         value: stats.medianDist.toFixed(2), sub: 'mi' },
+    { label: 'Ø distance / day',     value: stats.distPerDay.toFixed(1), sub: 'mi' },
+    { label: 'Ø energy / day',       value: stats.energyPerDay.toFixed(1), sub: 'kWh' },
+    { label: `Max speed (${rangeLabel})`, value: stats.maxOverall.toFixed(0), sub: 'mph' },
+  ];
+  // Only show the 30d max-speed tile when the range is strictly broader than 30d.
+  // (At range=30d, the range tile IS the 30d max; at range<30d, 30d data is outside the view.)
+  const isAll = rangeDays === 0 || rangeDays > 365;
+  if (rangeDays > 30 || isAll) {
+    tiles.push({ label: 'Max speed (30d)', value: stats.max30.toFixed(0), sub: 'mph' });
+  }
+  // Only show the 7d max-speed tile when the range is strictly broader than 7d.
+  if (rangeDays > 7 || isAll) {
+    tiles.push({ label: 'Max speed (7d)', value: stats.max7.toFixed(0), sub: 'mph' });
+  }
+  tiles.push(
+    { label: 'Extrap. monthly', value: Math.round(stats.extMonth).toLocaleString(), sub: 'mi' },
+    { label: 'Extrap. annual',  value: Math.round(stats.extYear).toLocaleString(), sub: 'mi' },
+  );
+  return tiles;
+}
 
-  // --- Render the tile grid -------------------------------------------------
-  const tile = (label, value, sub='') => `
+// Render a single-vehicle stats grid (used when only one car is selected, or
+// when Both is selected in "combined" mode — one grid per car stacked).
+function renderMileageStatsTiles(sessions, cutoff, now, rangeDays, rangeLabel) {
+  if (!sessions || sessions.length === 0) return '';
+  const stats = computeMileageStats(sessions, cutoff, now);
+  const specs = buildMileageTileSpecs(stats, rangeDays, rangeLabel);
+
+  const tileHTML = specs.map(t => `
     <div style="background:rgba(128,128,128,.05); border:1px solid var(--border); border-radius:6px; padding:10px 12px;">
-      <div style="font-size:11px; color:var(--text-soft); margin-bottom:4px;">${label}</div>
-      <div style="font-size:18px; font-weight:600;">${value}${sub ? `<span style="font-size:11px; color:var(--text-soft); font-weight:400;"> ${sub}</span>` : ''}</div>
-    </div>`;
+      <div style="font-size:11px; color:var(--text-soft); margin-bottom:4px;">${t.label}</div>
+      <div style="font-size:18px; font-weight:600;">${t.value}${t.sub ? `<span style="font-size:11px; color:var(--text-soft); font-weight:400;"> ${t.sub}</span>` : ''}</div>
+    </div>`).join('');
 
-  return `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:8px; margin-bottom:14px;">
-    ${tile('# of drives',          driveCount)}
-    ${tile('Total distance',       Math.round(totalDist).toLocaleString(), 'mi')}
-    ${tile('Total energy (net)',   totalEnergy.toFixed(0), 'kWh')}
-    ${tile('Median drive',         medianDist.toFixed(2), 'mi')}
-    ${tile('Ø distance / day',     distPerDay.toFixed(1), 'mi')}
-    ${tile('Ø energy / day',       energyPerDay.toFixed(1), 'kWh')}
-    ${tile('Max speed (overall)',  overallMaxSpeed.toFixed(0), 'mph')}
-    ${tile('Max speed (30d)',      maxSpeed30.toFixed(0), 'mph')}
-    ${tile('Max speed (7d)',       maxSpeed7.toFixed(0), 'mph')}
-    ${tile('Extrap. monthly',      Math.round(extMonth).toLocaleString(), 'mi')}
-    ${tile('Extrap. annual',       Math.round(extYear).toLocaleString(), 'mi')}
-  </div>`;
+  return `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:8px; margin-bottom:14px;">${tileHTML}</div>`;
+}
+
+// Render a compare-mode stats grid (used when Both is selected AND the user
+// has toggled "Compare"). Each tile shows both vehicles' values side-by-side.
+// vehiclesData is [{name, sessions}, ...] — typically two entries.
+function renderMileageStatsCompare(vehiclesData, cutoff, now, rangeDays, rangeLabel) {
+  if (!vehiclesData || vehiclesData.length < 2) return '';
+
+  // Compute stats for each vehicle and build tile specs in parallel.
+  const perVeh = vehiclesData.map(v => ({
+    name: v.name,
+    stats: computeMileageStats(v.sessions, cutoff, now),
+  }));
+  if (perVeh.every(p => p.stats.driveCount === 0)) return '';
+
+  const specsPerVeh = perVeh.map(p => buildMileageTileSpecs(p.stats, rangeDays, rangeLabel));
+  // All vehicles produce the same set of tile labels (same code path), so we
+  // can iterate by index. Defensive: take the shortest list to avoid mismatch.
+  const tileCount = Math.min(...specsPerVeh.map(s => s.length));
+
+  const tiles = [];
+  for (let i = 0; i < tileCount; i++) {
+    const label = specsPerVeh[0][i].label;
+    const rowsHTML = perVeh.map((p, vi) => {
+      const spec = specsPerVeh[vi][i];
+      return `<div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:13px; padding:2px 0;">
+        <span style="color:var(--text-soft);">${p.name}</span>
+        <span style="font-weight:600;">${spec.value}${spec.sub ? `<span style="font-size:11px; color:var(--text-soft); font-weight:400;"> ${spec.sub}</span>` : ''}</span>
+      </div>`;
+    }).join('');
+    tiles.push(`<div style="background:rgba(128,128,128,.05); border:1px solid var(--border); border-radius:6px; padding:10px 12px;">
+      <div style="font-size:11px; color:var(--text-soft); margin-bottom:6px;">${label}</div>
+      ${rowsHTML}
+    </div>`);
+  }
+  return `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:8px; margin-bottom:14px;">${tiles.join('')}</div>`;
+}
+
+// Human-readable label for a given chart-range-days value, used inside tile
+// labels like "Max speed (90d)". For 0/All we say "All".
+function rangeLabelFor(days) {
+  if (days <= 0 || days > 365) return 'All';
+  if (days === 1) return '24h';
+  if (days === 7) return '7d';
+  if (days === 30) return '30d';
+  if (days === 90) return '90d';
+  if (days === 365) return '1y';
+  return days + 'd';
 }
 
 // ---- Battery patterns view ----
