@@ -304,9 +304,9 @@ input:checked + .slider:before { transform: translateX(20px); }
           <div id="chartSubtabs" style="display:flex; gap:6px; flex-wrap:wrap;">
             <button class="chip chip-active" onclick="setChartView('efficiency',this)">⚡ Efficiency</button>
             <button class="chip" onclick="setChartView('charging',this)">🔌 Charging</button>
+            <button class="chip" onclick="setChartView('battery',this)">🔋 Battery patterns</button>
             <button class="chip" onclick="setChartView('mileage',this)">🛣 Mileage</button>
             <button class="chip" onclick="setChartView('drives',this)">🚗 Drives</button>
-            <button class="chip" onclick="setChartView('battery',this)">🔋 Battery patterns</button>
           </div>
           <!-- Car selector: M3L / MYP / Both -->
           <div id="chartCarToggle" style="display:flex; gap:6px;"></div>
@@ -376,6 +376,24 @@ input:checked + .slider:before { transform: translateX(20px); }
           <div style="font-size:11px; color:var(--text-soft); margin-bottom:14px;">Past costs stay frozen at the rate when charged. Use “Recalculate” to re-apply current rates to all history.</div>
           <div id="chargeSummary" style="display:none; margin-bottom:14px;"></div>
           <div id="chargeCostSessions"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="card" style="margin-top:14px;">
+          <div class="card-title">🏆 Top charging stations</div>
+          <div style="font-size:12px; color:var(--text-soft); margin-bottom:10px;">Where you charge the most, by total kWh and by total cost. Filtered to the active range.</div>
+          <div id="chargeTopStations"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="card" style="margin-top:14px;">
+          <div class="card-title">📊 SOC distribution</div>
+          <div style="font-size:12px; color:var(--text-soft); margin-bottom:10px;">How often each charge ended (Charge stats) or started (Discharge stats) at each SOC level. Bucketed by 10%.</div>
+          <div id="chargeSocDistribution"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="card" style="margin-top:14px;">
+          <div class="card-title">🗓 Charge heatmap</div>
+          <div style="font-size:12px; color:var(--text-soft); margin-bottom:10px;">When you charge — day of week × hour of day, colored by total kWh added.</div>
+          <div id="chargeHeatmap"><div class="empty">Loading…</div></div>
         </div>
       </div>
 
@@ -2810,6 +2828,11 @@ async function loadCharging() {
       ${controls}
     </div>`;
   }).join('');
+
+  // Render the three new TeslaMate-style insight cards from the same cache.
+  renderTopStations(chargingSessionsCache, vins);
+  renderSocDistribution(chargingSessionsCache, vins);
+  renderChargeHeatmap(chargingSessionsCache, vins);
 }
 
 // Set (or clear) a single session's home/away override and recompute just that row.
@@ -3101,6 +3124,179 @@ async function loadBatteryHealth() {
     empty.style.display = 'block';
     empty.textContent = 'Could not load battery health.';
   }
+}
+
+// ---- Charging insights (Top stations, SOC distribution, Heatmap) ----
+// All three render from chargingSessionsCache, which is already filtered to the
+// active range. They split per-vehicle into sub-cards within their container.
+
+// Split sessions by VIN, returning [{vin, name, sessions}, ...] in S.vehicles order.
+function chargingSessionsPerVehicle(sessions, vins) {
+  return vins.map(vin => {
+    const name = (S.vehicles.find(v=>v.vin===vin)||{}).name || 'Vehicle';
+    return { vin, name, sessions: sessions.filter(s => s._vin === vin) };
+  });
+}
+
+// ----- Top charging stations -----
+// Per-vehicle: two short ranked lists side-by-side (by kWh, by cost).
+// Each entry includes the location name, the aggregate metric, and the count.
+function renderTopStations(sessions, vins) {
+  const container = document.getElementById('chargeTopStations');
+  if (!container) return;
+  const perVeh = chargingSessionsPerVehicle(sessions, vins);
+
+  container.innerHTML = perVeh.map(pv => {
+    if (pv.sessions.length === 0) {
+      return `<div style="margin-bottom:18px;"><div style="font-weight:600; margin-bottom:8px;">${pv.name}</div><div class="empty">No charging sessions in range.</div></div>`;
+    }
+    // Aggregate by location_name.
+    const agg = {};
+    for (const s of pv.sessions) {
+      const loc = s.location_name || 'Unknown';
+      if (!agg[loc]) agg[loc] = { loc, kwh: 0, cost: 0, count: 0 };
+      agg[loc].kwh += (s.energy_kwh || 0);
+      agg[loc].cost += (s.cost || 0);
+      agg[loc].count += 1;
+    }
+    const byKwh = Object.values(agg).sort((a,b) => b.kwh - a.kwh).slice(0, 5);
+    const byCost = Object.values(agg).sort((a,b) => b.cost - a.cost).slice(0, 5);
+
+    const renderList = (rows, valueFn, valueLabel) => rows.map(r => `
+      <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border);">
+        <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:60%;">${r.loc}</span>
+        <span style="text-align:right; font-size:13px;">
+          <span style="font-weight:600;">${valueFn(r)}</span>
+          <span style="font-size:11px; color:var(--text-soft);"> · ${r.count}×</span>
+        </span>
+      </div>`).join('');
+
+    return `<div style="margin-bottom:18px;">
+      <div style="font-weight:600; margin-bottom:10px;">${pv.name}</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+        <div>
+          <div style="font-size:12px; color:var(--text-soft); margin-bottom:4px;">By energy</div>
+          ${renderList(byKwh, r => r.kwh.toFixed(1) + ' kWh')}
+        </div>
+        <div>
+          <div style="font-size:12px; color:var(--text-soft); margin-bottom:4px;">By cost</div>
+          ${renderList(byCost, r => '$' + r.cost.toFixed(2))}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ----- SOC distribution -----
+// Per-vehicle: two parallel bar visualizations.
+//   - Charge stats: end_soc bucketed by 10% (50% bucket = [50,60)).
+//   - Discharge stats: start_soc bucketed similarly.
+function renderSocDistribution(sessions, vins) {
+  const container = document.getElementById('chargeSocDistribution');
+  if (!container) return;
+  const perVeh = chargingSessionsPerVehicle(sessions, vins);
+
+  // Bucket boundaries 0,10,...,100. Bucket i covers [i*10, (i+1)*10).
+  // A 100% value goes in the 90 bucket.
+  const BUCKETS = [0,10,20,30,40,50,60,70,80,90];
+
+  const bucketize = (vals) => {
+    const counts = BUCKETS.map(() => 0);
+    for (const v of vals) {
+      if (v == null) continue;
+      const i = Math.min(9, Math.max(0, Math.floor(v / 10)));
+      counts[i] += 1;
+    }
+    return counts;
+  };
+
+  container.innerHTML = perVeh.map(pv => {
+    if (pv.sessions.length === 0) {
+      return `<div style="margin-bottom:18px;"><div style="font-weight:600; margin-bottom:8px;">${pv.name}</div><div class="empty">No charging sessions in range.</div></div>`;
+    }
+    const endCounts = bucketize(pv.sessions.map(s => s.end_soc));
+    const startCounts = bucketize(pv.sessions.map(s => s.start_soc));
+    const maxAll = Math.max(1, ...endCounts, ...startCounts);
+
+    const renderBars = (counts, label) => `
+      <div>
+        <div style="font-size:12px; color:var(--text-soft); margin-bottom:6px;">${label}</div>
+        ${BUCKETS.map((b, i) => {
+          const c = counts[i];
+          const pct = (c / maxAll) * 100;
+          return `<div style="display:grid; grid-template-columns:46px 1fr 32px; align-items:center; gap:8px; padding:3px 0; font-size:12px;">
+            <span style="color:var(--text-soft);">${b}–${b+10}%</span>
+            <div style="background:rgba(128,128,128,.08); height:14px; border-radius:3px; overflow:hidden;">
+              <div style="background:#5BA666; height:100%; width:${pct}%;"></div>
+            </div>
+            <span style="text-align:right;">${c}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+
+    return `<div style="margin-bottom:18px;">
+      <div style="font-weight:600; margin-bottom:10px;">${pv.name}</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:18px;">
+        ${renderBars(endCounts, 'Charge ended at (Charge stats)')}
+        ${renderBars(startCounts, 'Charge started at (Discharge stats)')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ----- Charge heatmap -----
+// Per-vehicle 7×24 grid (day-of-week × hour-of-day), color intensity = total kWh
+// added across all sessions touching that cell. A charge that crosses cells
+// contributes kWh proportional to time spent in each cell, so a 4-hour overnight
+// charge distributes across 4 cells rather than being lumped into the start hour.
+function renderChargeHeatmap(sessions, vins) {
+  const container = document.getElementById('chargeHeatmap');
+  if (!container) return;
+  const perVeh = chargingSessionsPerVehicle(sessions, vins);
+  const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+  container.innerHTML = perVeh.map(pv => {
+    if (pv.sessions.length === 0) {
+      return `<div style="margin-bottom:18px;"><div style="font-weight:600; margin-bottom:8px;">${pv.name}</div><div class="empty">No charging sessions in range.</div></div>`;
+    }
+    // 7×24 grid of kWh totals.
+    const grid = Array.from({length:7}, () => Array(24).fill(0));
+    for (const s of pv.sessions) {
+      const energy = s.energy_kwh || 0;
+      const dur = (s.end_ts || s.start_ts) - s.start_ts;
+      if (energy <= 0 || dur <= 0) continue;
+      // Walk the session in 5-minute slices and distribute energy proportionally.
+      const SLICE = 300;
+      const steps = Math.ceil(dur / SLICE);
+      const energyPerStep = energy / steps;
+      for (let i = 0; i < steps; i++) {
+        const t = s.start_ts + i * SLICE;
+        const d = new Date(t * 1000);
+        grid[d.getDay()][d.getHours()] += energyPerStep;
+      }
+    }
+    const maxCell = Math.max(0.001, ...grid.flat());
+
+    // Render as a simple HTML table; each cell colored as rgba(91,166,102, ratio).
+    const rows = DAYS.map((label, di) => {
+      const cells = grid[di].map((v, hi) => {
+        const ratio = v / maxCell;
+        const bg = `rgba(91,166,102,${(ratio*0.85).toFixed(3)})`;
+        const tip = `${label} ${String(hi).padStart(2,'0')}:00 — ${v.toFixed(2)} kWh`;
+        return `<td title="${tip}" style="background:${bg}; width:14px; height:18px; border:1px solid rgba(128,128,128,.06);"></td>`;
+      }).join('');
+      return `<tr><td style="font-size:11px; color:var(--text-soft); padding-right:6px; text-align:right;">${label}</td>${cells}</tr>`;
+    }).join('');
+
+    // X-axis labels (00, 03, 06, 09, 12, 15, 18, 21).
+    const xLabels = `<tr><td></td>${Array.from({length:24}, (_,h) => `<td style="font-size:10px; color:var(--text-soft); text-align:center;">${h%3===0?String(h).padStart(2,'0'):''}</td>`).join('')}</tr>`;
+
+    return `<div style="margin-bottom:18px;">
+      <div style="font-weight:600; margin-bottom:10px;">${pv.name}</div>
+      <table style="border-collapse:collapse; font-size:11px;">${rows}${xLabels}</table>
+      <div style="font-size:11px; color:var(--text-soft); margin-top:6px;">Darker green = more kWh charged in that hour of week (peak: ${maxCell.toFixed(1)} kWh).</div>
+    </div>`;
+  }).join('');
 }
 
 // ---- Geofences ----
