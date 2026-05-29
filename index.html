@@ -2483,11 +2483,10 @@ async function loadMileage() {
   }
 
   const rangeLabel = rangeLabelFor(chartRangeDays);
-  // Both is "active" when 2+ vehicles ended up in perVehicle AND both have data.
-  // The compare toggle appears only in that case.
+  // Both is "active" when 2+ vehicles ended up in perVehicle AND at least one has data.
   const bothActive = perVehicle.length >= 2 && perVehicle.some(p => p.months.length > 0);
 
-  // Compare-mode tile grid header (only when bothActive AND compare mode chosen).
+  // Toggle UI appears only when Both is active.
   const compareHeader = bothActive ? `
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:12px;">
       <span style="color:var(--text-soft);">Both mode:</span>
@@ -2495,7 +2494,95 @@ async function loadMileage() {
       <button class="chip ${mileageBothMode==='compare'?'chip-active':''}" onclick="setMileageBothMode('compare')">🔀 Compare</button>
     </div>` : '';
 
-  // Compare-mode summary tiles (single grid spanning both vehicles).
+  // ===== COMBINED MODE: fleet view — sums + merged month table + summed-odometer line =====
+  if (bothActive && mileageBothMode === 'combined') {
+    // Merge sessions across all vehicles for fleet-wide stats.
+    const mergedSessions = perVehicle.flatMap(p => p.sessions);
+    const mergedStats = computeMileageStats(mergedSessions, cutoff, now);
+    // Override maxOverall — should be the actual max-of-maxes across cars
+    // (computeMileageStats already does max() over the merged list, which is correct).
+    const specs = buildMileageTileSpecs(mergedStats, chartRangeDays, rangeLabel);
+    const tileHTML = specs.map(t => `
+      <div style="background:rgba(128,128,128,.05); border:1px solid var(--border); border-radius:6px; padding:10px 12px;">
+        <div style="font-size:11px; color:var(--text-soft); margin-bottom:4px;">${t.label}</div>
+        <div style="font-size:18px; font-weight:600;">${t.value}${t.sub ? `<span style="font-size:11px; color:var(--text-soft); font-weight:400;"> ${t.sub}</span>` : ''}</div>
+      </div>`).join('');
+    const combinedTiles = `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:8px; margin-bottom:14px;">${tileHTML}</div>`;
+
+    // Merge byMonth across vehicles for the fleet month-by-month table + chart.
+    const mergedByMonth = {};
+    perVehicle.forEach(p => {
+      Object.entries(p.byMonth).forEach(([m, x]) => {
+        if (!mergedByMonth[m]) mergedByMonth[m] = { dist: 0, dur: 0, count: 0 };
+        mergedByMonth[m].dist += x.dist;
+        mergedByMonth[m].dur += x.dur;
+        mergedByMonth[m].count += x.count;
+      });
+    });
+    const mergedMonths = Object.keys(mergedByMonth).sort();
+    const rowsHtml = mergedMonths.slice().reverse().map(m => {
+      const x = mergedByMonth[m];
+      const durMin = Math.round(x.dur/60);
+      const durStr = durMin>=60 ? `${Math.floor(durMin/60)}h ${durMin%60}m` : `${durMin}m`;
+      return `<tr>
+        <td style="padding:6px 12px;">${monthLabel(m)}</td>
+        <td style="padding:6px 12px; text-align:right;">${durStr}</td>
+        <td style="padding:6px 12px; text-align:right;">${Math.round(x.dist)} mi</td>
+        <td style="padding:6px 12px; text-align:right;">${x.count}</td>
+      </tr>`;
+    }).join('');
+    const combinedBody = `
+      <div style="font-weight:600; margin-bottom:10px;">Fleet total</div>
+      ${combinedTiles}
+      <div style="overflow-x:auto; margin-bottom:14px;">
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead><tr style="color:var(--text-soft); text-align:left; border-bottom:1px solid var(--border);">
+            <th style="padding:6px 12px; font-weight:500;">Period</th>
+            <th style="padding:6px 12px; font-weight:500; text-align:right;">Time driven</th>
+            <th style="padding:6px 12px; font-weight:500; text-align:right;">Distance</th>
+            <th style="padding:6px 12px; font-weight:500; text-align:right;"># Drives</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <div style="position:relative; height:${Math.max(180, mergedMonths.length*44+80)}px;"><canvas id="mileageChart_combined"></canvas></div>
+      <div style="font-size:13px; font-weight:500; margin:14px 0 6px; color:var(--text-soft);">📈 Fleet odometer over time (sum of both)</div>
+      <div style="position:relative; height:220px;"><canvas id="odoChart_combined"></canvas></div>`;
+
+    container.innerHTML = compareHeader + combinedBody;
+
+    // Bar chart for merged months.
+    if (mergedMonths.length > 0) {
+      const cv = document.getElementById('mileageChart_combined');
+      if (cv) {
+        mileageCharts['combined'] = new Chart(cv.getContext('2d'), {
+          type: 'bar',
+          data: {
+            labels: mergedMonths.map(monthLabel),
+            datasets: [
+              { label: 'Distance (mi)', data: mergedMonths.map(m => Math.round(mergedByMonth[m].dist)), backgroundColor: '#5BA666', yAxisID: 'y' },
+              { label: 'Drives', data: mergedMonths.map(m => mergedByMonth[m].count), backgroundColor: '#D4B226', yAxisID: 'y1' }
+            ]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: true } },
+            scales: {
+              y:  { position: 'left',  title: { display: true, text: 'Distance (mi)' }, grid: { color: 'rgba(128,128,128,.12)' }, beginAtZero: true },
+              y1: { position: 'right', title: { display: true, text: 'Drives' }, grid: { drawOnChartArea: false }, beginAtZero: true }
+            }
+          }
+        });
+      }
+    }
+
+    // Summed-odometer fleet line (async; fetches per-vin then sums on unified timeline).
+    renderFleetOdometerChart(perVehicle.map(p => p.vin), 'odoChart_combined', cutoff, now);
+    return;
+  }
+
+  // ===== COMPARE MODE: side-by-side per-tile + per-vehicle drill-downs =====
+  // ===== or SINGLE-CAR / Both+Combined-not-set: per-vehicle stacked    =====
   const compareTiles = (bothActive && mileageBothMode === 'compare')
     ? renderMileageStatsCompare(perVehicle, cutoff, now, chartRangeDays, rangeLabel)
     : '';
@@ -2538,7 +2625,7 @@ async function loadMileage() {
         </table>
       </div>
       <div style="position:relative; height:${Math.max(180, pv.months.length*44+80)}px;"><canvas id="${pv.canvasId}"></canvas></div>
-      <div style="font-size:13px; font-weight:500; margin:14px 0 6px; color:var(--text-soft);">📈 Odometer over time</div>
+      <div style="font-size:13px; font-weight:500; margin:14px 0 6px; color:var(--text-soft);">📈 ${(bothActive && mileageBothMode === 'compare') ? 'Miles driven this period' : 'Odometer over time'}</div>
       <div style="position:relative; height:220px;"><canvas id="${pv.odoCanvasId}"></canvas></div>
     </div>`;
   });
@@ -2570,14 +2657,20 @@ async function loadMileage() {
       });
     }
     // Fire-and-forget odometer chart fetch + render (async; doesn't block bar chart).
-    renderOdometerChart(pv.vin, pv.odoCanvasId, cutoff, now);
+    // In compare mode we render "miles driven since range start" (line starts at 0,
+    // slope = driving rate); otherwise raw odometer values.
+    const compareOdo = bothActive && mileageBothMode === 'compare';
+    renderOdometerChart(pv.vin, pv.odoCanvasId, cutoff, now, compareOdo);
   });
 }
 
 // Async helper: fetch Odometer history for a vehicle over the active range and
-// render it as a monotone-increasing line chart. Independent of the main render
-// so a slow /history call doesn't block the rest of the Mileage tab.
-async function renderOdometerChart(vin, canvasId, cutoff, now) {
+// render it. Two modes:
+//   - default (compareMode=false): raw odometer values, monotone line.
+//   - compareMode=true: subtract earliest reading so the line starts at 0 and the
+//     y-axis becomes "miles driven this period." Used in Both/Compare mode so
+//     slopes between vehicles are directly comparable on a shared scale.
+async function renderOdometerChart(vin, canvasId, cutoff, now, compareMode=false) {
   const secret = localStorage.getItem('pb_proxy_secret');
   let points = [];
   try {
@@ -2588,17 +2681,112 @@ async function renderOdometerChart(vin, canvasId, cutoff, now) {
 
   const cv = document.getElementById(canvasId);
   if (!cv) return;
-  // Destroy any existing chart on this canvas before re-rendering.
   if (mileageCharts[vin + '_odo']) { try { mileageCharts[vin + '_odo'].destroy(); } catch(e){} }
   if (points.length === 0) {
     cv.parentElement.innerHTML = '<div class="empty" style="height:100%; display:flex; align-items:center; justify-content:center;">No odometer data in this range.</div>';
     return;
   }
+
+  // Compare mode: subtract the earliest odometer reading so both vehicles' lines
+  // start at 0 and slopes are directly comparable as "miles driven this period."
+  let plotData = points;
+  let yLabel = ' mi';
+  if (compareMode) {
+    const base = points[0].y;
+    plotData = points.map(p => ({ x: p.x, y: p.y - base }));
+  }
+
   mileageCharts[vin + '_odo'] = new Chart(cv.getContext('2d'), {
     type: 'line',
     data: { datasets: [{
-      label: 'Odometer (mi)',
-      data: points,
+      label: compareMode ? 'Miles driven' : 'Odometer (mi)',
+      data: plotData,
+      borderColor: '#5BA666',
+      backgroundColor: 'rgba(91,166,102,0.15)',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0,
+      fill: true,
+    }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => `${Math.round(ctx.parsed.y).toLocaleString()}${yLabel}` } },
+      },
+      scales: {
+        x: { type: 'time', time: { unit: chartRangeDays >= 90 ? 'week' : 'day' }, grid: { color: 'rgba(128,128,128,.08)' } },
+        y: { beginAtZero: compareMode, ticks: { callback: v => Math.round(v).toLocaleString() + ' mi' }, grid: { color: 'rgba(128,128,128,.12)' } },
+      },
+    },
+  });
+}
+
+// "2026-05" -> "2026 May"
+function monthLabel(key) {
+  const [y, m] = key.split('-');
+  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${y} ${names[parseInt(m,10)-1]}`;
+}
+
+// Fleet (Combined-mode) odometer line: fetch Odometer history for each VIN,
+// step-interpolate so a missing reading inherits the last-known value (odometer
+// is monotonic — between readings it's at least the previous value), then sum
+// onto a unified timeline. One green line on a single y-axis, representing the
+// household's growing fleet mileage.
+async function renderFleetOdometerChart(vins, canvasId, cutoff, now) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+
+  // 1. Fetch Odometer history per vehicle in parallel.
+  const perVehicle = await Promise.all(vins.map(async vin => {
+    let points = [];
+    try {
+      const r = await fetch(`${BRIDGE_BASE}/history?secret=${secret}&vin=${vin}&field=Odometer&from=${cutoff}&to=${now}&limit=20000`);
+      const d = await r.json();
+      points = (d.points || []).filter(p => p.val != null && p.val > 0).sort((a,b) => a.ts - b.ts);
+    } catch(e) { console.log('fleet odometer fetch failed for', vin, e); }
+    return { vin, points };
+  }));
+
+  const cv = document.getElementById(canvasId);
+  if (!cv) return;
+  if (mileageCharts['fleet_odo']) { try { mileageCharts['fleet_odo'].destroy(); } catch(e){} }
+
+  // 2. Build unified timeline = union of all timestamps across all vehicles.
+  const tsSet = new Set();
+  perVehicle.forEach(v => v.points.forEach(p => tsSet.add(p.ts)));
+  const timeline = Array.from(tsSet).sort((a,b) => a-b);
+
+  if (timeline.length === 0) {
+    cv.parentElement.innerHTML = '<div class="empty" style="height:100%; display:flex; align-items:center; justify-content:center;">No odometer data in this range.</div>';
+    return;
+  }
+
+  // 3. For each timeline point, sum each vehicle's odometer at that moment using
+  //    step interpolation: the value at time T is the last reading at or before T.
+  //    Vehicles with no readings yet at time T contribute 0 to the sum (their
+  //    odometer simply hasn't been seen yet in this range).
+  //    Walk each vehicle's points with an index that only moves forward.
+  const idx = perVehicle.map(() => 0);
+  const lastVal = perVehicle.map(() => 0);
+  const summed = timeline.map(t => {
+    let sum = 0;
+    perVehicle.forEach((v, vi) => {
+      // Advance this vehicle's index while next point is ≤ current time.
+      while (idx[vi] < v.points.length && v.points[idx[vi]].ts <= t) {
+        lastVal[vi] = v.points[idx[vi]].val;
+        idx[vi]++;
+      }
+      sum += lastVal[vi];
+    });
+    return { x: t * 1000, y: sum };
+  });
+
+  mileageCharts['fleet_odo'] = new Chart(cv.getContext('2d'), {
+    type: 'line',
+    data: { datasets: [{
+      label: 'Fleet odometer (sum)',
+      data: summed,
       borderColor: '#5BA666',
       backgroundColor: 'rgba(91,166,102,0.15)',
       borderWidth: 1.5,
@@ -2618,13 +2806,6 @@ async function renderOdometerChart(vin, canvasId, cutoff, now) {
       },
     },
   });
-}
-
-// "2026-05" -> "2026 May"
-function monthLabel(key) {
-  const [y, m] = key.split('-');
-  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return `${y} ${names[parseInt(m,10)-1]}`;
 }
 
 // Render a 9-tile stats grid summarizing a vehicle's drives over the range.
