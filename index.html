@@ -1369,6 +1369,14 @@ async function fetchVehicles() {
   }
 }
 
+// ── Chart/Analytics state (hoisted above showDash so the init-time call chain
+// from page load → showDash → loadDriveSessions → chartSelectedVins doesn't hit
+// these in the temporal dead zone). ────────────────────────────────────────────
+let chartRangeDays = 90;
+let chartCar = 'active'; // 'active' resolves to the global picker; or a specific VIN; or 'both'
+let mileageCharts = {};  // vin -> Chart instance, destroyed on reload
+let mileageBothMode = 'combined'; // 'combined' (fleet sum) or 'compare' (side-by-side)
+
 // ── Dashboard ────────────────────────────────────────────
 async function showDash() {
   document.getElementById('setupView').style.display = 'none';
@@ -2375,9 +2383,6 @@ let batteryRangeDays = 30;
 // ---- Charts tab (Efficiency / Mileage / Charging) ----
 let effScatterChart = null;
 let chartView = 'efficiency';
-let chartRangeDays = 90;
-let chartCar = 'active'; // 'active' resolves to the global picker; or a specific VIN; or 'both'
-
 // Car colors for overlays
 const CAR_COLORS = {
   '5YJ3E1EBXRF816176': { solid: '#3B82F6', soft: 'rgba(59,130,246,.75)', name: 'M3L' }, // blue M3L
@@ -2444,9 +2449,6 @@ function loadChartView() {
 }
 
 // ---- Mileage stats (per month, per vehicle) ----
-let mileageCharts = {}; // vin -> Chart instance, so we can destroy on reload
-let mileageBothMode = 'combined'; // 'combined' (stacked per-vehicle) or 'compare' (side-by-side tiles)
-
 function setMileageBothMode(mode) {
   mileageBothMode = mode;
   loadMileage();
