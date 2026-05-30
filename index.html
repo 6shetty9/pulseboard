@@ -1776,13 +1776,15 @@ function saveCfg() {
   syncPushoverToBridge(S.cfg.poUser, S.cfg.poToken);
 }
 function loadCfgToForm() {
+  // Always sync from bridge first — these don't depend on S.cfg existing,
+  // and the bridge is the source of truth. Without this, an empty S.cfg
+  // (no localStorage yet) would skip the bridge load entirely and the
+  // selectors would stay at their HTML defaults.
+  loadPushoverFromBridge();
+  loadDeterrentFromBridge();
   const c = S.cfg; if (!c) return;
   ['poUser','poToken','twSid','twToken','twFrom','twTo','sgKey','sgFrom','sgTo'].forEach(id => { const el=document.getElementById(id); if(el&&c[id]) el.value=c[id]; });
   ['pushover','sms','email'].forEach(ch => { const t=document.getElementById(ch+'Toggle'); if(t) t.className='toggle '+(S.channels[ch]?'on':'off'); updateChDetail(ch); });
-  // After populating from localStorage, fetch authoritative Pushover credentials
-  // from the bridge — if the bridge has different values, they win.
-  loadPushoverFromBridge();
-  loadDeterrentFromBridge();
 }
 
 // Fetch Pushover credentials from the bridge (the source of truth) and populate
