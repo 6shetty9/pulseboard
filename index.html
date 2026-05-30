@@ -1370,12 +1370,30 @@ async function fetchVehicles() {
 }
 
 // ── Chart/Analytics state (hoisted above showDash so the init-time call chain
-// from page load → showDash → loadDriveSessions → chartSelectedVins doesn't hit
-// these in the temporal dead zone). ────────────────────────────────────────────
+// from page load → showDash → loadDriveSessions doesn't hit these in the
+// temporal dead zone). All `let` declarations that any function reachable from
+// showDash() depends on must live here, BEFORE line 1996's top-level call. ───
 let chartRangeDays = 90;
 let chartCar = 'active'; // 'active' resolves to the global picker; or a specific VIN; or 'both'
 let mileageCharts = {};  // vin -> Chart instance, destroyed on reload
 let mileageBothMode = 'combined'; // 'combined' (fleet sum) or 'compare' (side-by-side)
+let chargeChart = null;
+let driveMap = null;
+let driveRouteLayer = null;
+let driveSessionsCache = [];
+let driveRangeDays = 7; // 0 = all time
+const DRIVE_RANGE_LABELS = { 1: '24h', 7: '7-day', 30: '30-day', 60: '60-day', 90: '90-day', 365: '1-year', 0: 'All-time' };
+let batteryChart = null;
+let batteryRangeDays = 30;
+let batteryCharts = {};
+let effScatterChart = null;
+let chartView = 'efficiency';
+const CAR_COLORS = {
+  '5YJ3E1EBXRF816176': { solid: '#3B82F6', soft: 'rgba(59,130,246,.75)', name: 'M3L' }, // blue M3L
+  '7SAYGDET9TA621106': { solid: '#E24B4A', soft: 'rgba(226,75,74,.75)', name: 'MYP' },  // red MYP
+};
+let chargingSessionsCache = [];
+const BRIDGE_BASE = 'https://telemetry.6shetty9.com:8444';
 
 // ── Dashboard ────────────────────────────────────────────
 async function showDash() {
@@ -2007,8 +2025,6 @@ setTimeout(() => {
 // the asleep duration stays accurate. Runs regardless of active tab.
 setInterval(() => { refreshLastSeen(); }, 60000);
 
-let chargeChart = null;
-
 async function loadChargeChart() {
   const secret = localStorage.getItem('pb_proxy_secret');
   if (!secret || !S.vehicleVin) return;
@@ -2154,12 +2170,6 @@ function exportChargingCSV() {
 }
 
 // ---- Drive history ----
-let driveMap = null;
-let driveRouteLayer = null;
-let driveSessionsCache = [];
-let driveRangeDays = 7; // 0 = all time
-
-const DRIVE_RANGE_LABELS = { 1: '24h', 7: '7-day', 30: '30-day', 60: '60-day', 90: '90-day', 365: '1-year', 0: 'All-time' };
 
 function setDriveRange(days, el) {
   driveRangeDays = days;
@@ -2377,17 +2387,8 @@ async function showDriveRoute(idx) {
 }
 
 // ---- Battery health ----
-let batteryChart = null;
-let batteryRangeDays = 30;
 
 // ---- Charts tab (Efficiency / Mileage / Charging) ----
-let effScatterChart = null;
-let chartView = 'efficiency';
-// Car colors for overlays
-const CAR_COLORS = {
-  '5YJ3E1EBXRF816176': { solid: '#3B82F6', soft: 'rgba(59,130,246,.75)', name: 'M3L' }, // blue M3L
-  '7SAYGDET9TA621106': { solid: '#E24B4A', soft: 'rgba(226,75,74,.75)', name: 'MYP' },  // red MYP
-};
 function carColor(vin) { return CAR_COLORS[vin] || { solid: '#888', soft: 'rgba(136,136,136,.7)', name: vin.slice(-4) }; }
 
 // Which VINs does the current selection resolve to?
@@ -2970,7 +2971,6 @@ function rangeLabelFor(days) {
 // Renders per-vehicle SOC over time with a 30-day trailing median computed in
 // 2-hour calendar buckets, plus horizontal guides at 20% and 80% (Tesla's
 // recommended daily range). One chart card per selected vehicle.
-let batteryCharts = {};
 
 async function loadBatteryPatterns() {
   const secret = localStorage.getItem('pb_proxy_secret');
@@ -3145,8 +3145,8 @@ function compute30DayMedian2hBuckets(points, cutoff, now) {
 
 // ---- Charging cost view ----
 // Cache of the currently-displayed charging sessions, kept in sync with what
-// loadCharging() rendered. Used by the CSV export button.
-let chargingSessionsCache = [];
+// loadCharging() rendered. Used by the CSV export button. Declared at the top
+// of the script along with other init-time state.
 
 async function saveChargeRates() {
   const secret = localStorage.getItem('pb_proxy_secret');
@@ -3731,8 +3731,6 @@ let zoneEditorMarker = null;
 let zoneEditorCircle = null;
 let zonesCache = [];
 let editingZoneId = null;
-
-const BRIDGE_BASE = 'https://telemetry.6shetty9.com:8444';
 
 function fmtAgo(sinceTs) {
   if (!sinceTs) return '';
