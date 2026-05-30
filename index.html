@@ -2259,7 +2259,25 @@ async function loadDriveSessions() {
       const hrs = Math.floor(dur / 60), mins = dur % 60;
       const durStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
       const dist = (s.distance_mi || 0).toFixed(1);
-      const eff = s.efficiency_wh_per_mi > 0 ? `${Math.round(s.efficiency_wh_per_mi)} Wh/mi` : '—';
+      // Wh/mi display, with a color-coded "vs rated" percentage appended.
+      // Color thresholds come from efficiencyColor() so the drive history row
+      // matches the Analytics → Efficiency view. For drives <0.3 mi the value
+      // is unreliable (cold start dominates) — render gray instead of in-scheme.
+      let eff;
+      if (s.efficiency_wh_per_mi > 0) {
+        const whmi = Math.round(s.efficiency_wh_per_mi);
+        let effPctHtml = '';
+        if (s.efficiency_vs_rated > 0) {
+          const pct = Math.round(s.efficiency_vs_rated);
+          const color = ((s.distance_mi || 0) < 0.3)
+            ? 'var(--text-soft)'      // too short to be meaningful
+            : efficiencyColor(pct);
+          effPctHtml = ` · <span style="color:${color}; font-weight:500;">${pct}%</span>`;
+        }
+        eff = `${whmi} Wh/mi${effPctHtml}`;
+      } else {
+        eff = '—';
+      }
       const route = (s.start_place || s.end_place)
         ? `${s.start_place || '?'} → ${s.end_place || '?'}`
         : when;
@@ -2390,6 +2408,19 @@ async function showDriveRoute(idx) {
 
 // ---- Charts tab (Efficiency / Mileage / Charging) ----
 function carColor(vin) { return CAR_COLORS[vin] || { solid: '#888', soft: 'rgba(136,136,136,.7)', name: vin.slice(-4) }; }
+
+// Shared color thresholds for the "vs rated" efficiency percentage. Higher is
+// better (inverted convention: ≥100 means you used less than EPA-rated Wh/mi).
+//   * green  ≥100   beat the rating
+//   * amber  90-99  near the rating (measurement noise band)
+//   * red    <90    materially worse than rated
+// Used by both the Drive history row and the Analytics → Efficiency drives list
+// so the two views never disagree on what color a given percentage should be.
+function efficiencyColor(pct) {
+  if (pct >= 100) return 'var(--green,#3FB950)';
+  if (pct >= 90)  return '#E3A008';
+  return '#E24B4A';
+}
 
 // Which VINs does the current selection resolve to?
 function chartSelectedVins() {
@@ -3369,7 +3400,7 @@ async function loadEfficiency() {
   allDrives.sort((a,b) => b.start_ts - a.start_ts);
   drivesEl.innerHTML = allDrives.slice(0, 25).map(dr => {
     const when = new Date(dr.start_ts * 1000).toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + new Date(dr.start_ts*1000).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
-    const col = dr.efficiency_pct >= 100 ? 'var(--green,#3FB950)' : dr.efficiency_pct >= 90 ? '#E3A008' : '#E24B4A';
+    const col = efficiencyColor(dr.efficiency_pct);
     const tag = multi ? `<span style="color:${carColor(dr._vin).solid}; font-weight:600;">${carColor(dr._vin).name}</span> · ` : '';
     return `<div class="row"><span class="row-label">${tag}${when}${dr.temp_f!=null?` · ${dr.temp_f}°F`:''}</span>
       <span class="row-val">${dr.distance_mi} mi · ${dr.wh_per_mi} Wh/mi · <span style="color:${col};">${dr.efficiency_pct}%</span></span></div>`;
