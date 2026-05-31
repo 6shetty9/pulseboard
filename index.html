@@ -2016,9 +2016,34 @@ if (storedCode && Date.now() - storedTs < 30000) {
 }
 
 // Connect telemetry when token is available
-setTimeout(() => {
-  if (S.token) connectTelemetry();
-}, 500);
+// Telemetry connection — resilient version.
+//
+// Why this isn't a one-shot setTimeout: page load races where S.token isn't
+// populated yet at 500ms, transient WSS drops (laptop sleep, network blip,
+// bridge restart), and silent reconnect failures used to leave the page
+// permanently disconnected with no symptom except "telemetry shows offline"
+// and dashes everywhere. The fix is to make connect attempts cheap and
+// repeated rather than dramatic and rare. connectTelemetry() already guards
+// against double-opening (OPEN/CONNECTING short-circuit), so calling it on
+// a timer is safe.
+function ensureTelemetryConnected() {
+  if (!S.token) return; // need auth token first
+  if (pbWs && (pbWs.readyState === WebSocket.OPEN || pbWs.readyState === WebSocket.CONNECTING)) return;
+  connectTelemetry();
+}
+
+// First attempt on page load, with a small delay to let load() populate S.
+setTimeout(ensureTelemetryConnected, 500);
+// Then check every 15s — if WSS dropped or was never established, reconnect.
+setInterval(ensureTelemetryConnected, 15000);
+// Reconnect immediately when the tab becomes visible again (laptop wake,
+// switching back from another tab). Catches the common "came back to find
+// dashes" case.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) ensureTelemetryConnected();
+});
+// Reconnect on browser "online" event after a network change.
+window.addEventListener('online', ensureTelemetryConnected);
 
 // Refresh vehicle status periodically. Pull the bridge's authoritative last-seen
 // timestamps and re-render the picker so online → asleep transitions show up and
