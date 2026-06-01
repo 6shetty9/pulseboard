@@ -755,7 +755,16 @@ async function cmdApi(path, method='POST', body=null) {
   const secret = localStorage.getItem('pb_proxy_secret') || '';
   const opts = { method, headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/json', 'X-Pulseboard-Secret': secret } };
   if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(LOCAL_PROXY + path, opts);
+  let r = await fetch(LOCAL_PROXY + path, opts);
+  if (r.status === 401) {
+    // Mirror the api() retry path: ask the bridge for a fresh access_token
+    // and try once more. doRefresh() returns false if the chain is dead, in
+    // which case the caller gets the original 401 and can prompt re-signin.
+    if (await doRefresh()) {
+      opts.headers.Authorization = 'Bearer ' + S.token;
+      r = await fetch(LOCAL_PROXY + path, opts);
+    }
+  }
   return r;
 }
 
@@ -1286,22 +1295,50 @@ async function api(path, method='GET', body=null) {
   return r;
 }
 
+// doRefresh asks the BRIDGE for a fresh access_token. The bridge is now the
+// sole holder of the Tesla refresh_token chain — having two refreshers
+// (browser + bridge) was causing recurring 403s when one consumer's
+// refresh_token got rotated out from under the other. After this refactor,
+// the browser never calls Tesla's /oauth2/v3/token endpoint for refreshes;
+// it always asks the bridge for a current access_token.
+//
+// Returns true on success (S.token updated, ready to retry the original
+// request). Returns false if the bridge can't help — usually because the
+// refresh chain is dead and a fresh sign-in is needed.
 async function doRefresh() {
-  const cid = localStorage.getItem('pb_cid');
-  const csec = localStorage.getItem('pb_csec');
-  if (!S.refresh || !cid) return false;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) {
+    console.warn('[token] doRefresh: no pb_proxy_secret in localStorage');
+    return false;
+  }
   try {
-    const r = await fetch(PROXY + '/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'refresh_token', client_id: cid, client_secret: csec, refresh_token: S.refresh })
-    });
+    const r = await fetch(`${BRIDGE_BASE}/admin/get_token?secret=${secret}`);
+    if (r.status === 503) {
+      // Bridge says the refresh chain is dead. The browser cannot recover
+      // by itself — a fresh OAuth sign-in is required.
+      const d = await r.json().catch(() => ({}));
+      console.warn('[token] bridge refresh chain dead:', d.detail || d);
+      return false;
+    }
+    if (!r.ok) {
+      console.warn('[token] bridge get_token failed:', r.status);
+      return false;
+    }
     const d = await r.json();
     if (!d.access_token) return false;
     S.token = d.access_token;
-    S.refresh = d.refresh_token || S.refresh;
-    save(); return true;
-  } catch(e) { return false; }
+    // Track expiry so a future helper can pre-emptively refresh before 401.
+    // For now, the 401-retry path in api()/cmdApi() handles refresh reactively.
+    S.tokenExpiresAt = d.expires_at || 0;
+    // Note: S.refresh is intentionally NOT updated here — the bridge owns
+    // the refresh chain. We deliberately leave any stale S.refresh value
+    // alone (harmless once we stop using it).
+    save();
+    return true;
+  } catch (e) {
+    console.warn('[token] doRefresh threw:', e);
+    return false;
+  }
 }
 
 // ── Auth ─────────────────────────────────────────────────
@@ -1342,6 +1379,34 @@ async function exchangeCode() {
     if (!d.access_token) throw new Error(d.error_description || d.error || JSON.stringify(d));
     S.token = d.access_token;
     S.refresh = d.refresh_token;
+    S.tokenExpiresAt = d.expires_in ? Math.floor(Date.now()/1000) + d.expires_in : 0;
+    // Hand the freshly-issued refresh chain to the bridge so it becomes the
+    // sole refresher from here on. If this fails the browser-side flow still
+    // works for the current 8-hour token lifetime, but subsequent refreshes
+    // would 403 — so log loudly.
+    try {
+      const secret = localStorage.getItem('pb_proxy_secret');
+      if (secret) {
+        const seedR = await fetch(`${BRIDGE_BASE}/admin/set_tokens?secret=${secret}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            access_token: d.access_token,
+            refresh_token: d.refresh_token,
+            expires_in: d.expires_in || 28800
+          })
+        });
+        if (!seedR.ok) {
+          console.warn('[auth] bridge /admin/set_tokens failed:', seedR.status, await seedR.text().catch(()=> ''));
+        } else {
+          console.log('[auth] bridge took ownership of refresh chain');
+        }
+      } else {
+        console.warn('[auth] no pb_proxy_secret — bridge will NOT have the refresh chain. Refreshes will fail at 8h.');
+      }
+    } catch (e) {
+      console.warn('[auth] bridge hand-off threw (continuing):', e);
+    }
     await fetchVehicles();
     save();
     showDash();
