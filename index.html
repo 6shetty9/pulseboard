@@ -2667,14 +2667,41 @@ async function loadMileage() {
   const cutoff = chartRangeDays > 0 ? now - chartRangeDays*86400 : 0;
 
   // Fetch + aggregate once per vehicle, then render table and chart from the same data.
+  // For cost tiles, also fetch charging sessions so we can attach the previous-charge
+  // rate to each drive (same logic as the Drives tab).
   const perVehicle = [];
   for (const vin of vins) {
     let sessions = [];
+    let charges = [];
     try {
       const r = await fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${vin}&limit=2000`);
       const d = await r.json();
       sessions = (d.sessions || []).filter(s => s.start_ts >= cutoff && s.distance_mi > 0);
     } catch(e) { console.log('mileage load failed', e); }
+    try {
+      const cr = await fetch(`${BRIDGE_BASE}/charging/sessions?secret=${secret}&vin=${vin}&limit=500`);
+      const cd = await cr.json();
+      charges = (cd.sessions || [])
+        .filter(s => s.rate_used > 0 && s.end_ts > 0)
+        .sort((a, b) => a.end_ts - b.end_ts);
+    } catch(e) { console.log('mileage charges load failed', e); }
+
+    // Attach _cost to each drive using the previous-charging-point lookup.
+    // Same logic as loadDriveSessions / costForDrive — kept here inline to
+    // avoid a dependency between tabs. If neither a prior charge nor
+    // S.kwhRate is available, _cost stays 0 and the drive doesn't contribute
+    // to the cost extrapolation.
+    sessions.forEach(s => {
+      s._cost = 0;
+      if (!(s.energy_used_kwh > 0)) return;
+      // Reverse-walk charges to find the most recent end_ts < drive.start_ts.
+      let rate = 0;
+      for (let i = charges.length - 1; i >= 0; i--) {
+        if (charges[i].end_ts < s.start_ts) { rate = charges[i].rate_used; break; }
+      }
+      if (rate <= 0 && S.kwhRate > 0) rate = S.kwhRate;
+      if (rate > 0) s._cost = s.energy_used_kwh * rate;
+    });
 
     const byMonth = {};
     sessions.forEach(s => {
@@ -2687,7 +2714,7 @@ async function loadMileage() {
     });
     const months = Object.keys(byMonth).sort();
     const name = (S.vehicles.find(v=>v.vin===vin)||{}).name || 'Vehicle';
-    perVehicle.push({ vin, name, sessions, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6), odoCanvasId: 'odoChart_' + vin.slice(-6) });
+    perVehicle.push({ vin, name, sessions, charges, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6), odoCanvasId: 'odoChart_' + vin.slice(-6) });
   }
 
   const rangeLabel = rangeLabelFor(chartRangeDays);
@@ -3022,12 +3049,18 @@ async function renderFleetOdometerChart(vins, canvasId, cutoff, now) {
 // (positive = net consumed, negative = net regenerated — rare overall).
 // Compute mileage stats for a set of drive sessions over a range.
 // Pure function — no DOM. Returns an object with all the headline numbers.
+// Caller is expected to have attached `_cost` (USD) to each session for cost
+// tiles to be meaningful. Sessions without _cost contribute 0 to the cost
+// totals — silently — so a vehicle/period with no resolvable rates just
+// doesn't get cost tiles rendered (handled by the tile builder).
 function computeMileageStats(sessions, cutoff, now) {
   const out = {
-    driveCount: 0, totalDist: 0, totalEnergy: 0,
-    medianDist: 0, distPerDay: 0, energyPerDay: 0,
+    driveCount: 0, totalDist: 0, totalEnergy: 0, totalCost: 0,
+    medianDist: 0, distPerDay: 0, energyPerDay: 0, costPerDay: 0,
     maxOverall: 0, max30: 0, max7: 0,
     extMonth: 0, extYear: 0,
+    extMonthCost: 0, extYearCost: 0,
+    costedDrives: 0,  // how many drives contributed to totalCost
   };
   if (!sessions || sessions.length === 0) return out;
 
@@ -3036,6 +3069,7 @@ function computeMileageStats(sessions, cutoff, now) {
     out.driveCount += 1;
     out.totalDist += (s.distance_mi || 0);
     out.totalEnergy += (s.energy_used_kwh || 0);
+    if (s._cost > 0) { out.totalCost += s._cost; out.costedDrives += 1; }
     if (s.max_speed_mph != null && s.max_speed_mph > out.maxOverall) out.maxOverall = s.max_speed_mph;
     if (s.distance_mi > 0) distances.push(s.distance_mi);
   }
@@ -3056,8 +3090,11 @@ function computeMileageStats(sessions, cutoff, now) {
   const spanDays = spanSeconds / 86400;
   out.distPerDay = spanDays > 0 ? out.totalDist / spanDays : 0;
   out.energyPerDay = spanDays > 0 ? out.totalEnergy / spanDays : 0;
+  out.costPerDay = spanDays > 0 ? out.totalCost / spanDays : 0;
   out.extMonth = out.distPerDay * 30;
   out.extYear  = out.distPerDay * 365;
+  out.extMonthCost = out.costPerDay * 30;
+  out.extYearCost  = out.costPerDay * 365;
 
   const cutoff30 = now - 30*86400;
   const cutoff7  = now -  7*86400;
@@ -3096,6 +3133,15 @@ function buildMileageTileSpecs(stats, rangeDays, rangeLabel) {
     { label: 'Extrap. monthly', value: Math.round(stats.extMonth).toLocaleString(), sub: 'mi' },
     { label: 'Extrap. annual',  value: Math.round(stats.extYear).toLocaleString(), sub: 'mi' },
   );
+  // Cost tiles: only show if we have cost data for at least one drive. Same
+  // honest-display principle as the Drives tab — don't pretend to know the
+  // cost if no drives had a resolvable rate.
+  if (stats.costedDrives > 0) {
+    tiles.push(
+      { label: 'Extrap. monthly cost', value: '$' + stats.extMonthCost.toFixed(0), sub: '' },
+      { label: 'Extrap. annual cost',  value: '$' + Math.round(stats.extYearCost).toLocaleString(), sub: '' },
+    );
+  }
   return tiles;
 }
 
