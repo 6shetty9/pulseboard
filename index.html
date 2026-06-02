@@ -655,7 +655,7 @@ input:checked + .slider:before { transform: translateX(20px); }
           </span>
         </div>
         <div style="font-size:11px; color:var(--hint); margin-top:8px; line-height:1.5;">
-          Used to estimate drive cost. Changing this updates the cost shown on all drives (cost is not yet frozen per-trip — that's planned).
+          Fallback rate used for drives before any tracked charging session. Once you've logged a charge, each drive uses the rate from its most recent prior charge (Charging tab → Rates).
         </div>
       </div>
       <div class="card">
@@ -2269,12 +2269,22 @@ function setDriveRange(days, el) {
 }
 
 async function loadDriveSessions() {
-  // COST NOTE (future work): Drive cost is currently computed live as
-  // energy_used_kwh × S.kwhRate (the CURRENT home rate). This means changing the
-  // rate retroactively changes all displayed drive costs. Planned migration ("option 3"):
-  // move cost to CHARGING sessions instead of drives — cost = kWh added × rate at the
-  // charging session, with rate frozen at charge time and varying by charging location
-  // (home vs away). Build this when implementing the dedicated Cost calculator (#9).
+  // COST MODEL (May 31, 2026): each drive's cost is computed using the
+  // FROZEN rate of its MOST RECENT PRIOR CHARGE for the same vehicle. The
+  // bridge persists rate_used on each charging session at detection time
+  // (chargestore.go), so once a charge has happened the rate is stable —
+  // changing your home or away rate going forward does NOT retroactively
+  // rewrite past drive costs.
+  //
+  // Fallback chain per drive:
+  //   1. Most recent charging session ending before drive.start_ts → use its rate_used
+  //   2. No prior charge found → fall back to S.kwhRate (Settings → Energy cost)
+  //   3. No fallback rate set → don't show a cost
+  //
+  // This is the "previous charging point" model (Option 4). It's simpler and
+  // more conservative than full FIFO, and 80% as accurate for everyday use.
+  // Real FIFO (depleting per-session balances as drives consume them) is a
+  // planned bridge-side feature for when per-drive precision matters.
   const secret = localStorage.getItem('pb_proxy_secret');
   if (!secret) return;
   const el = document.getElementById('driveSessions');
@@ -2296,10 +2306,47 @@ async function loadDriveSessions() {
 
   try {
     let allSessions = [];
+    // Per-VIN charging history, ordered by end_ts ascending so the "find most
+    // recent prior charge" lookup is a single reverse-walk.
+    const chargesByVin = {};
+
     for (const vin of vins) {
       const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${vin}&limit=500`);
       const d = await r.json();
       (d.sessions || []).forEach(s => { s._vin = vin; allSessions.push(s); });
+
+      // Also fetch charging sessions for this VIN — needed to attribute drive cost
+      // to the most recent prior charge's rate. We deliberately fetch with a high
+      // limit so even an old drive can find its prior charge.
+      try {
+        const cr = await fetch(`${BRIDGE_BASE}/charging/sessions?secret=${secret}&vin=${vin}&limit=500`);
+        const cd = await cr.json();
+        const list = (cd.sessions || [])
+          .filter(s => s.rate_used > 0 && s.end_ts > 0)
+          .sort((a, b) => a.end_ts - b.end_ts); // ascending — newest at end
+        chargesByVin[vin] = list;
+      } catch (e) {
+        console.warn('[drives] charging fetch failed for', vin, e);
+        chargesByVin[vin] = [];
+      }
+    }
+
+    // costForDrive: returns {rate, source} for a drive, or {rate: null, source: null}
+    // if no rate could be determined. 'source' is 'charge' (prior charge), 'fallback'
+    // (S.kwhRate from Settings), or null (no rate available, no cost shown).
+    function costForDrive(s) {
+      const charges = chargesByVin[s._vin] || [];
+      // Reverse-walk to find the most recent charge whose end_ts < drive's start_ts.
+      // Since charges are sorted ascending by end_ts, we iterate from the tail.
+      for (let i = charges.length - 1; i >= 0; i--) {
+        if (charges[i].end_ts < s.start_ts) {
+          return { rate: charges[i].rate_used, source: 'charge' };
+        }
+      }
+      if (S.kwhRate && S.kwhRate > 0) {
+        return { rate: S.kwhRate, source: 'fallback' };
+      }
+      return { rate: null, source: null };
     }
 
     // Filter to the selected period (0 = all time), newest first.
@@ -2326,9 +2373,23 @@ async function loadDriveSessions() {
     const totalKWh = validEnergy.reduce((a, s) => a + s.energy_used_kwh, 0);
     const energyMi = validEnergy.reduce((a, s) => a + (s.distance_mi || 0), 0);
     const avgEff = energyMi > 0 ? (totalKWh * 1000 / energyMi) : 0;
+
+    // Per-drive cost: sum where we have a rate. Drives with no resolvable rate
+    // don't contribute to the total (their per-row display also omits cost).
+    let totalCost = 0;
+    let costedKWh = 0;
+    let hasAnyChargeRate = false;
+    for (const s of validEnergy) {
+      const c = costForDrive(s);
+      if (c.rate != null) {
+        totalCost += s.energy_used_kwh * c.rate;
+        costedKWh += s.energy_used_kwh;
+        if (c.source === 'charge') hasAnyChargeRate = true;
+      }
+    }
+    const hasCost = costedKWh > 0;
     const sumEl = document.getElementById('driveSummary');
     sumEl.style.display = 'grid';
-    const hasCost = S.kwhRate && totalKWh > 0;
     sumEl.style.gridTemplateColumns = hasCost ? 'repeat(4, 1fr)' : 'repeat(3, 1fr)';
     sumEl.style.gap = '10px';
     let html = `
@@ -2336,8 +2397,10 @@ async function loadDriveSessions() {
       <div class="stat"><div class="stat-label">${rangeLabel} energy</div><div class="stat-val">${totalKWh.toFixed(1)}</div><div class="stat-sub">kWh</div></div>
       <div class="stat"><div class="stat-label">Avg efficiency</div><div class="stat-val">${avgEff > 0 ? avgEff.toFixed(0) : '—'}</div><div class="stat-sub">Wh/mi</div></div>`;
     if (hasCost) {
-      const totalCost = totalKWh * S.kwhRate;
-      html += `<div class="stat"><div class="stat-label">${rangeLabel} cost</div><div class="stat-val">~$${totalCost.toFixed(2)}</div><div class="stat-sub">@ $${S.kwhRate}/kWh</div></div>`;
+      // Sub-label honestly describes the source mix: "from charge sessions"
+      // if every costed drive had a prior charge; "estimated" otherwise.
+      const subLabel = hasAnyChargeRate ? 'from charge sessions' : 'estimated';
+      html += `<div class="stat"><div class="stat-label">${rangeLabel} cost</div><div class="stat-val">~$${totalCost.toFixed(2)}</div><div class="stat-sub">${subLabel}</div></div>`;
     }
     sumEl.innerHTML = html;
 
@@ -2372,9 +2435,21 @@ async function loadDriveSessions() {
         ? `${s.start_place || '?'} → ${s.end_place || '?'}`
         : when;
 
+      // Per-row cost using the previous-charge rate (or fallback).
       let costStr = '';
-      if (S.kwhRate && s.energy_used_kwh > 0) {
-        costStr = ` &nbsp;·&nbsp; ~$${(s.energy_used_kwh * S.kwhRate).toFixed(2)}`;
+      if (s.energy_used_kwh > 0) {
+        const c = costForDrive(s);
+        if (c.rate != null) {
+          const amount = (s.energy_used_kwh * c.rate).toFixed(2);
+          // Tiny visual cue: italicize if this is the Settings fallback, not a
+          // real charge session rate — distinguishes "real money from a charge"
+          // from "ballpark estimate."
+          if (c.source === 'fallback') {
+            costStr = ` &nbsp;·&nbsp; <span style="font-style:italic; color:var(--text-soft);">~$${amount}</span>`;
+          } else {
+            costStr = ` &nbsp;·&nbsp; ~$${amount}`;
+          }
+        }
       }
       const carTag = multiCar ? ` · ${(S.vehicles.find(v=>v.vin===s._vin)||{}).name?.replace('Tesla ','')||''}` : '';
 
