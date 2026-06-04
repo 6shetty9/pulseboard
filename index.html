@@ -143,7 +143,7 @@ input:checked + .slider:before { transform: translateX(20px); }
   <span class="logo-name">PulseBoard</span>
   <div class="topbar-right">
     <span class="pill pill-off" id="monitorPill">Monitor off</span>
-    <button class="btn" id="monitorToggleBtn" onclick="toggleMonitor()">Start monitor</button>
+    <button class="btn" id="monitorToggleBtn" onclick="toggleMonitor()">Pause alerts</button>
   </div>
 </div>
 
@@ -600,7 +600,10 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div class="card-title">Alert history</div>
         <!-- Vehicle filter pills. 'all' shows alerts from both vehicles; named
              VINs filter to a specific car. Backed by /alerts/recent?vin=... -->
-        <div id="alertLogFilter" style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;"></div>
+        <div id="alertLogFilter" style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap;"></div>
+        <!-- Kind filter pills. Lives next to the vehicle filter. Pulls kinds
+             from /alerts/prefs so it stays in sync with the prefs UI. -->
+        <div id="alertLogKindFilter" style="display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap;"></div>
         <div id="alertLog"><div class="empty">No alerts yet.</div></div>
       </div>
     </div>
@@ -651,6 +654,19 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div class="card-title">Session</div>
         <div class="row"><span class="row-label">Connected as</span><span class="row-val" id="sessionVehicle">—</span></div>
         <div style="margin-top:12px;"><button class="btn" onclick="disconnect()">Disconnect & sign out</button></div>
+      </div>
+      <!-- Alert preferences (Phase 2 of alerts work, Jun 4 2026). Per-vehicle,
+           per-kind toggles for both "fire this alert at all" and "suppress at
+           home." Rendered dynamically by renderAlertPrefs() since the set of
+           alert kinds and the list of vehicles are both dynamic. -->
+      <div class="card">
+        <div class="card-title">Alert preferences</div>
+        <div style="font-size:12px; color:var(--text-soft); margin-bottom:10px; line-height:1.5;">
+          Choose which alerts fire for each vehicle. "Suppress at home" silences the alert when the car is inside your Home geofence.
+        </div>
+        <div id="alertPrefsBody">
+          <div class="empty" style="padding:14px 0;">Loading preferences…</div>
+        </div>
       </div>
       <div class="card">
         <div class="card-title">Energy cost</div>
@@ -1500,6 +1516,7 @@ function showTab(name, el) {
     const ri = document.getElementById('kwhRateInput');
     if (ri && S.kwhRate) ri.value = S.kwhRate;
     loadOutOfParkAlert();
+    loadAlertPrefs();
   }
 }
 
@@ -1690,11 +1707,20 @@ async function wakeVehicle() {
 }
 
 function toggleMonitor() {
+  // NOTE: This button is in a transitional state (Phase 2 of alerts work,
+  // Jun 4 2026). The label has been renamed to "Pause alerts" but the
+  // function still does what the legacy "Start/Stop monitor" toggle did —
+  // it just doesn't do anything user-visible anymore since the browser-side
+  // detection it gated has been migrated to the bridge (passive.go).
+  //
+  // Phase 3 backlog: wire this button to actually POST a pause flag to the
+  // bridge that suppresses all alerts for N hours. Until then, clicking is
+  // a no-op.
   if (S.monitoring) {
     S.monitoring = false;
     document.getElementById('monitorPill').textContent = 'Monitor off';
     document.getElementById('monitorPill').className = 'pill pill-off';
-    document.getElementById('monitorToggleBtn').textContent = 'Start monitor';
+    document.getElementById('monitorToggleBtn').textContent = 'Pause alerts';
     document.getElementById('liveIndicator').style.display = 'none';
     const np = document.getElementById('nextPoll'); if (np) np.textContent = '—';
     const ps = document.getElementById('pollStatus'); if (ps) ps.textContent = 'Stopped';
@@ -1702,7 +1728,7 @@ function toggleMonitor() {
     S.monitoring = true;
     document.getElementById('monitorPill').textContent = 'Live';
     document.getElementById('monitorPill').className = 'pill pill-live';
-    document.getElementById('monitorToggleBtn').textContent = 'Stop monitor';
+    document.getElementById('monitorToggleBtn').textContent = 'Resume alerts';
     document.getElementById('liveIndicator').style.display = 'flex';
     const ps = document.getElementById('pollStatus'); if (ps) ps.textContent = 'Active (telemetry)';
     const np = document.getElementById('nextPoll'); if (np) np.textContent = 'live';
@@ -1839,8 +1865,13 @@ function renderFeed() {
 // Alert log state
 // alertLogVin: which vehicle to filter to. 'all' = no filter, returns alerts
 //   for every VIN. Otherwise a real VIN string.
+// alertLogKind: which alert kind to filter to. 'all' = no filter. Otherwise
+//   a real kind string (e.g. 'sentry_tier2'). Available kinds are pulled from
+//   the alertPrefsCache populated by loadAlertPrefs() in Settings — we
+//   piggyback on that fetch rather than hitting /alerts/prefs again.
 // alertLogPollTimer: setInterval handle so we can clear when the tab is hidden.
 let alertLogVin = 'all';
+let alertLogKind = 'all';
 let alertLogPollTimer = null;
 
 // Render the vehicle filter pills above the alert list. Looks like the
@@ -1869,9 +1900,64 @@ function renderAlertLogFilter() {
   }).join('');
 }
 
+// Render the kind filter pills. Smaller than vehicle pills since there are
+// many of them; uses tighter padding and a smaller font.
+//
+// Pulls kinds from alertPrefsCache (populated by loadAlertPrefs when Settings
+// is opened). If Settings hasn't been opened yet, falls back to fetching once.
+async function renderAlertLogKindFilter() {
+  const el = document.getElementById('alertLogKindFilter');
+  if (!el) return;
+  // Lazy-load the kinds list if not already cached.
+  if (!alertPrefsCache.kinds || alertPrefsCache.kinds.length === 0) {
+    const secret = localStorage.getItem('pb_proxy_secret');
+    if (secret) {
+      try {
+        const r = await fetch(`${BRIDGE_BASE}/alerts/prefs?secret=${secret}`);
+        if (r.ok) alertPrefsCache = await r.json();
+      } catch (e) { /* leave empty; filter just hides */ }
+    }
+  }
+  const kinds = alertPrefsCache.kinds || [];
+  if (kinds.length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  // Sort using the same priority order as the Settings UI for consistency.
+  const order = ['sentry_tier2', 'sentry_off', 'unlock_parked', 'out_of_park',
+                 'sentry_tier1', 'tire_low', 'low_battery',
+                 'charge_start', 'charge_complete',
+                 'zone_enter', 'zone_exit', 'schedule_run'];
+  const sortedKinds = [...kinds].sort((a, b) => {
+    const ai = order.indexOf(a.kind);
+    const bi = order.indexOf(b.kind);
+    if (ai === -1 && bi === -1) return a.kind.localeCompare(b.kind);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+  const opts = [{ value: 'all', label: 'All kinds' }];
+  for (const k of sortedKinds) {
+    const meta = ALERT_KIND_META[k.kind] || { label: k.kind, emoji: '•' };
+    opts.push({ value: k.kind, label: `${meta.emoji} ${meta.label.split(':')[0]}` });
+  }
+  el.innerHTML = opts.map(o => {
+    const active = (alertLogKind === o.value);
+    return `<button class="btn"
+              style="padding:4px 10px; font-size:11px; ${active ? 'background:var(--text); color:var(--bg);' : 'background:var(--bg); color:var(--text);'}"
+              onclick="setAlertLogKind('${o.value}')">${o.label}</button>`;
+  }).join('');
+}
+
 function setAlertLogVin(vin) {
   alertLogVin = vin;
   renderAlertLogFilter();
+  renderAlertLog();
+}
+
+function setAlertLogKind(kind) {
+  alertLogKind = kind;
+  renderAlertLogKindFilter();
   renderAlertLog();
 }
 
@@ -1897,6 +1983,7 @@ async function renderAlertLog() {
   }
   const params = new URLSearchParams({ secret, limit: '200' });
   if (alertLogVin && alertLogVin !== 'all') params.set('vin', alertLogVin);
+  if (alertLogKind && alertLogKind !== 'all') params.set('kind', alertLogKind);
   let alerts = [];
   try {
     const r = await fetch(`${BRIDGE_BASE}/alerts/recent?${params.toString()}`);
@@ -1965,6 +2052,7 @@ async function renderAlertLog() {
 function startAlertLogPolling() {
   stopAlertLogPolling();
   renderAlertLogFilter();
+  renderAlertLogKindFilter();
   renderAlertLog();
   alertLogPollTimer = setInterval(renderAlertLog, 30000);
 }
@@ -4705,6 +4793,156 @@ async function loadOutOfParkAlert() {
     toggle.checked = !!d.enabled;
   } catch(e) {
     console.log('out_of_park load failed:', e);
+  }
+}
+
+// ---- Alert preferences (Settings tab card) ----------------------------------
+//
+// Renders a per-vehicle, per-kind grid of toggles. Backed by /alerts/prefs
+// on the bridge (Phase 2). Each toggle POSTs immediately on change — there's
+// no separate "save" button, since these are per-row state changes.
+//
+// The set of alert kinds is fetched from the bridge (so adding a new kind on
+// the bridge doesn't require a UI change). The vehicle list comes from
+// S.vehicles, which is populated at sign-in.
+
+// Human-readable labels + emojis per alert kind. Kept in sync with the
+// constants in alerts.go. Missing entries fall back to the raw kind string.
+const ALERT_KIND_META = {
+  sentry_tier1:    { label: 'Sentry: movement detected',     emoji: '👀' },
+  sentry_tier2:    { label: 'Sentry: door opened while locked', emoji: '🚨' },
+  out_of_park:     { label: 'Car shifted out of Park',       emoji: '🚗' },
+  zone_enter:      { label: 'Arrived at a geofence',         emoji: '📍' },
+  zone_exit:       { label: 'Left a geofence',               emoji: '🚪' },
+  charge_start:    { label: 'Charging started',              emoji: '🔌' },
+  charge_complete: { label: 'Charging complete',             emoji: '✅' },
+  tire_low:        { label: 'Tire pressure low',             emoji: '🛞' },
+  schedule_run:    { label: 'Scheduled action fired',        emoji: '🗓' },
+  unlock_parked:   { label: 'Unlocked while parked',         emoji: '🔓' },
+  low_battery:     { label: 'Low battery',                   emoji: '🪫' },
+  sentry_off:      { label: 'Sentry turned off while parked', emoji: '⚠️' },
+};
+
+let alertPrefsCache = { prefs: {}, kinds: [] };
+
+async function loadAlertPrefs() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const el = document.getElementById('alertPrefsBody');
+  if (!el) return;
+  if (!secret) {
+    el.innerHTML = '<div class="empty">Proxy secret not set.</div>';
+    return;
+  }
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/alerts/prefs?secret=${secret}`);
+    if (!r.ok) {
+      el.innerHTML = `<div class="empty">Failed to load (HTTP ${r.status}).</div>`;
+      return;
+    }
+    alertPrefsCache = await r.json();
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Failed to load: ${e.message}</div>`;
+    return;
+  }
+  renderAlertPrefs();
+}
+
+function renderAlertPrefs() {
+  const el = document.getElementById('alertPrefsBody');
+  if (!el) return;
+  const vehicles = (S.vehicles || []).filter(v => v && v.vin);
+  if (vehicles.length === 0) {
+    el.innerHTML = '<div class="empty">No vehicles connected yet.</div>';
+    return;
+  }
+  const kinds = alertPrefsCache.kinds || [];
+  if (kinds.length === 0) {
+    el.innerHTML = '<div class="empty">No alert kinds reported.</div>';
+    return;
+  }
+  // Sort kinds in a stable, useful order. Roughly: security-critical first,
+  // then routine, then informational. Anything not listed falls to the end
+  // alphabetically by kind.
+  const order = ['sentry_tier2', 'sentry_off', 'unlock_parked', 'out_of_park',
+                 'sentry_tier1', 'tire_low', 'low_battery',
+                 'charge_start', 'charge_complete',
+                 'zone_enter', 'zone_exit', 'schedule_run'];
+  const sortedKinds = [...kinds].sort((a, b) => {
+    const ai = order.indexOf(a.kind);
+    const bi = order.indexOf(b.kind);
+    if (ai === -1 && bi === -1) return a.kind.localeCompare(b.kind);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+
+  // For each vehicle, render a small table.
+  let html = '';
+  vehicles.forEach((veh, vi) => {
+    const vinName = (veh.name || 'Vehicle').replace('Tesla ', '');
+    const vinPrefs = (alertPrefsCache.prefs || {})[veh.vin] || {};
+    html += `<div style="margin-top:${vi === 0 ? 0 : 18}px;">
+      <div style="font-weight:600; margin-bottom:8px;">${vinName}</div>
+      <div style="display:grid; grid-template-columns: 1fr auto auto; gap:6px 14px; align-items:center;">
+        <div style="font-size:11px; color:var(--text-soft); text-transform:uppercase; letter-spacing:.5px;">Alert</div>
+        <div style="font-size:11px; color:var(--text-soft); text-transform:uppercase; letter-spacing:.5px;">Enabled</div>
+        <div style="font-size:11px; color:var(--text-soft); text-transform:uppercase; letter-spacing:.5px;">Suppress<br>at home</div>`;
+    sortedKinds.forEach(k => {
+      const meta = ALERT_KIND_META[k.kind] || { label: k.kind, emoji: '•' };
+      // Effective values: row override if present, else the kind's default.
+      const stored = vinPrefs[k.kind];
+      const enabled = stored ? stored.enabled : k.enabled;
+      const suppressHome = stored ? stored.suppress_home : k.suppress_home;
+      html += `
+        <div style="font-size:13px;">${meta.emoji} ${meta.label}</div>
+        <div><label class="switch" style="display:inline-block;"><input type="checkbox" ${enabled ? 'checked' : ''} onchange="setAlertPref('${veh.vin}','${k.kind}','enabled',this.checked)"><span class="slider"></span></label></div>
+        <div><label class="switch" style="display:inline-block;"><input type="checkbox" ${suppressHome ? 'checked' : ''} onchange="setAlertPref('${veh.vin}','${k.kind}','suppress_home',this.checked)"><span class="slider"></span></label></div>`;
+    });
+    html += `</div></div>`;
+  });
+  el.innerHTML = html;
+}
+
+async function setAlertPref(vin, kind, field, value) {
+  // Read the current effective values, mutate the one we're changing, then
+  // POST the full row. Bridge does upsert-or-update.
+  const k = (alertPrefsCache.kinds || []).find(x => x.kind === kind);
+  if (!k) {
+    console.error('unknown alert kind', kind);
+    return;
+  }
+  const stored = ((alertPrefsCache.prefs || {})[vin] || {})[kind];
+  const body = {
+    vin,
+    kind,
+    enabled:       stored ? stored.enabled       : k.enabled,
+    suppress_home: stored ? stored.suppress_home : k.suppress_home,
+  };
+  body[field] = value;
+
+  const secret = localStorage.getItem('pb_proxy_secret');
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/alerts/prefs?secret=${secret}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      console.error('alert pref save failed:', r.status);
+      // Roll back the UI by reloading from bridge (which still has the old value)
+      loadAlertPrefs();
+      return;
+    }
+    // Update local cache so we don't need to refetch for the next toggle.
+    if (!alertPrefsCache.prefs) alertPrefsCache.prefs = {};
+    if (!alertPrefsCache.prefs[vin]) alertPrefsCache.prefs[vin] = {};
+    alertPrefsCache.prefs[vin][kind] = {
+      enabled: body.enabled,
+      suppress_home: body.suppress_home,
+    };
+  } catch (e) {
+    console.error('alert pref save error:', e);
+    loadAlertPrefs();
   }
 }
 
