@@ -596,7 +596,13 @@ input:checked + .slider:before { transform: translateX(20px); }
     </div>
 
     <div id="tab-alerts" style="display:none;">
-      <div class="card"><div class="card-title">Alert history</div><div id="alertLog"><div class="empty">No alerts yet.</div></div></div>
+      <div class="card">
+        <div class="card-title">Alert history</div>
+        <!-- Vehicle filter pills. 'all' shows alerts from both vehicles; named
+             VINs filter to a specific car. Backed by /alerts/recent?vin=... -->
+        <div id="alertLogFilter" style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;"></div>
+        <div id="alertLog"><div class="empty">No alerts yet.</div></div>
+      </div>
     </div>
 
     <div id="tab-notify" style="display:none;">
@@ -914,32 +920,30 @@ async function handleTelemetryEvent(evt) {
       const state = pbLiveStateByVin[evt.vin];
       const isParked = state.Gear === 'ShiftStateP' || !state.Gear;
 
-      // Passive-state alerts (only while monitoring is on, to match old poll behavior).
-      // These fire on state CHANGE so they don't repeat every telemetry tick.
-      if (S.monitoring) {
-        // Unlocked while parked
+      // Passive-state alerts USED TO live here, gated on S.monitoring:
+      //   - Unlocked while parked  (Locked transitions true→false)
+      //   - Low battery            (BatteryLevel crosses below 20%)
+      //   - Sentry turned off      (SentryMode goes off while parked)
+      //
+      // As of Phase 1 of the alert-log migration (Jun 3 2026), the browser
+      // stops doing detection — the bridge is the source of truth for all
+      // alerts. The three checks above will be moved to the bridge in
+      // Phase 2 (passive.go), gated by per-VIN preferences in alertprefs.go.
+      //
+      // Keeping the variable hygiene (state._lastLocked, _lowBattAlerted,
+      // _sentryWasOn) so when Phase 2 ships and the toggles flip back on,
+      // there's no stale flag from this code path.
+      if (false) {
+        // Intentionally disabled. Migration in progress.
         if ('Locked' in evt.fields && isParked) {
           const lockedNow = pbBool(state.Locked);
-          if (lockedNow === false && state._lastLocked !== false) {
-            await fireAlert('unlock','Vehicle unlocked','Doors are currently unlocked','warn');
-          }
           state._lastLocked = lockedNow;
         }
-        // Low battery (cross below 20%)
         if ('BatteryLevel' in evt.fields && typeof state.BatteryLevel === 'number') {
-          if (state.BatteryLevel < 20 && !state._lowBattAlerted) {
-            state._lowBattAlerted = true;
-            await fireAlert('battery','Low battery',`Battery at ${Math.round(state.BatteryLevel)}%`,'warn');
-          } else if (state.BatteryLevel >= 22) {
-            state._lowBattAlerted = false; // reset with hysteresis so it can re-alert later
-          }
+          if (state.BatteryLevel >= 22) state._lowBattAlerted = false;
         }
-        // Sentry turned off unexpectedly (was on, now off) while parked
         if ('SentryMode' in evt.fields && isParked) {
           const sentryOff = evt.fields.SentryMode === 'SentryModeStateOff' || evt.fields.SentryMode === 'SentryModeStateIdle';
-          if (sentryOff && state._sentryWasOn === true) {
-            await fireAlert('sentry_off','⚠ Sentry disabled!','Sentry turned off unexpectedly','err');
-          }
           state._sentryWasOn = !sentryOff;
         }
       }
@@ -1485,6 +1489,13 @@ function showTab(name, el) {
   if (name === 'charts') { renderChartCarToggle(); loadChartView(); }
   if (name === 'geofences') { loadZones(); }
   if (name === 'schedules') { loadSchedules(); }
+  if (name === 'alerts') {
+    startAlertLogPolling();
+  } else {
+    // Stop polling when leaving the Alert log tab. Avoids wasted /alerts/recent
+    // requests every 30s when the user isn't looking at the log.
+    stopAlertLogPolling();
+  }
   if (name === 'settings') {
     const ri = document.getElementById('kwhRateInput');
     if (ri && S.kwhRate) ri.value = S.kwhRate;
@@ -1825,14 +1836,143 @@ function renderFeed() {
   }).join('');
 }
 
-function renderAlertLog() {
-  const el = document.getElementById('alertLog');
-  if (!S.alerts.length) { el.innerHTML = '<div class="empty">No alerts yet.</div>'; return; }
-  el.innerHTML = S.alerts.map(a => {
-    const pc = a.severity==='err'?'pill-live':a.severity==='warn'?'pill-warn':'pill-ok';
-    const pt = a.severity==='err'?'Alert':a.severity==='warn'?'Warn':'OK';
-    return `<div class="row"><span class="row-label">${a.time.toLocaleTimeString()} — ${a.title}: ${a.desc}</span><span><span class="pill ${pc}">${pt}</span></span></div>`;
+// Alert log state
+// alertLogVin: which vehicle to filter to. 'all' = no filter, returns alerts
+//   for every VIN. Otherwise a real VIN string.
+// alertLogPollTimer: setInterval handle so we can clear when the tab is hidden.
+let alertLogVin = 'all';
+let alertLogPollTimer = null;
+
+// Render the vehicle filter pills above the alert list. Looks like the
+// Analytics car selector (M3L / MYP / Both) but with 'All' instead of 'Both'
+// since alerts aren't a merge — just a filter on a unified server-side log.
+function renderAlertLogFilter() {
+  const el = document.getElementById('alertLogFilter');
+  if (!el) return;
+  const vehicles = (S.vehicles || []).filter(v => v && v.vin);
+  if (vehicles.length <= 1) {
+    // Single vehicle (or none) — no filter UI needed.
+    el.innerHTML = '';
+    alertLogVin = 'all';
+    return;
+  }
+  const opts = [{ value: 'all', label: 'All' }];
+  for (const v of vehicles) {
+    const short = (v.name || 'Vehicle').replace('Tesla ', '');
+    opts.push({ value: v.vin, label: short });
+  }
+  el.innerHTML = opts.map(o => {
+    const active = (alertLogVin === o.value);
+    return `<button class="btn ${active ? 'btn-primary' : ''}"
+              style="${active ? '' : 'background:var(--bg); color:var(--text);'}"
+              onclick="setAlertLogVin('${o.value}')">${o.label}</button>`;
   }).join('');
+}
+
+function setAlertLogVin(vin) {
+  alertLogVin = vin;
+  renderAlertLogFilter();
+  renderAlertLog();
+}
+
+// renderAlertLog fetches the most recent alerts from the bridge (which is
+// the source of truth post-May-2026 migration) and renders them.
+//
+// The old implementation read from S.alerts — an in-memory array populated by
+// the browser's own polling-based detection. That array was always empty in
+// practice because (a) the bridge took over alert firing for sentry/zones/
+// parkalert events, and (b) the three remaining browser-side checks were
+// gated behind S.monitoring being explicitly turned on. The result was a
+// perpetually empty Alert log.
+//
+// Now we fetch /alerts/recent which returns rows from the bridge's alerts
+// table. Filterable by VIN via alertLogVin state.
+async function renderAlertLog() {
+  const el = document.getElementById('alertLog');
+  if (!el) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) {
+    el.innerHTML = '<div class="empty">Proxy secret not set.</div>';
+    return;
+  }
+  const params = new URLSearchParams({ secret, limit: '200' });
+  if (alertLogVin && alertLogVin !== 'all') params.set('vin', alertLogVin);
+  let alerts = [];
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/alerts/recent?${params.toString()}`);
+    if (!r.ok) {
+      el.innerHTML = `<div class="empty">Failed to load alerts (HTTP ${r.status}).</div>`;
+      return;
+    }
+    const data = await r.json();
+    alerts = data.alerts || [];
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Failed to load alerts: ${e.message}</div>`;
+    return;
+  }
+  if (!alerts.length) {
+    el.innerHTML = '<div class="empty">No alerts yet.</div>';
+    return;
+  }
+  // Render newest-first (server already sorts that way).
+  // Pill colors map to severity. Vehicle name shown when "All" is selected
+  // so users can tell which car each alert came from.
+  const multiVin = (alertLogVin === 'all') && (S.vehicles || []).length > 1;
+  el.innerHTML = alerts.map(a => {
+    const pillClass =
+      a.severity === 'err'  ? 'pill-live' :
+      a.severity === 'warn' ? 'pill-warn' :
+                              'pill-ok';
+    const pillText =
+      a.severity === 'err'  ? 'Alert' :
+      a.severity === 'warn' ? 'Warn'  :
+                              'Info';
+    const when = new Date(a.ts * 1000).toLocaleString([], {
+      month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit'
+    });
+    let vinTag = '';
+    if (multiVin) {
+      const v = (S.vehicles || []).find(x => x.vin === a.vin);
+      const short = v ? (v.name || '').replace('Tesla ', '') : a.vin.slice(-4);
+      vinTag = `<span style="color:var(--text-soft); font-size:11px; margin-right:6px;">[${short}]</span>`;
+    }
+    // Pushover delivery status is shown subtly — only call out failures, since
+    // 'sent OK' is the boring expected case.
+    let deliveryNote = '';
+    if (!a.pushover_ok) {
+      const detail = a.pushover_error
+        ? `Pushover failed: ${a.pushover_error}`
+        : 'Pushover skipped (no credentials)';
+      deliveryNote = `<div style="font-size:11px; color:var(--text-soft); margin-top:2px;">${detail}</div>`;
+    }
+    return `<div class="row" style="border-bottom:1px solid var(--border); padding:10px 0; align-items:flex-start;">
+      <span class="row-label" style="display:flex; flex-direction:column; gap:2px; flex:1; min-width:0;">
+        <span>${vinTag}<strong>${a.title}</strong></span>
+        <span style="font-size:12px; color:var(--text-soft);">${a.description}</span>
+        ${deliveryNote}
+        <span style="font-size:11px; color:var(--text-soft); margin-top:2px;">${when}</span>
+      </span>
+      <span><span class="pill ${pillClass}">${pillText}</span></span>
+    </div>`;
+  }).join('');
+}
+
+// Polling lifecycle: fetch alerts when the tab is shown, refresh every 30s
+// while it's visible, stop when it isn't. Kept simple — single timer, scoped
+// to this tab only. Visibility change (laptop sleep, tab switch) is handled
+// by clearing the timer; visibility back resumes via showTab() rebind.
+function startAlertLogPolling() {
+  stopAlertLogPolling();
+  renderAlertLogFilter();
+  renderAlertLog();
+  alertLogPollTimer = setInterval(renderAlertLog, 30000);
+}
+function stopAlertLogPolling() {
+  if (alertLogPollTimer) {
+    clearInterval(alertLogPollTimer);
+    alertLogPollTimer = null;
+  }
 }
 
 // ── Notifications ────────────────────────────────────────
