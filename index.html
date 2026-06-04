@@ -1938,13 +1938,13 @@ async function renderAlertLog() {
       vinTag = `<span style="color:var(--text-soft); font-size:11px; margin-right:6px;">[${short}]</span>`;
     }
     // Pushover delivery status is shown subtly — only call out failures, since
-    // 'sent OK' is the boring expected case.
+    // 'sent OK' is the boring expected case. We only render the note when we
+    // have a real error message; without one, we can't honestly distinguish
+    // "missing credentials" from "synthetic row" from "early-cooldown drop,"
+    // so we say nothing rather than guess.
     let deliveryNote = '';
-    if (!a.pushover_ok) {
-      const detail = a.pushover_error
-        ? `Pushover failed: ${a.pushover_error}`
-        : 'Pushover skipped (no credentials)';
-      deliveryNote = `<div style="font-size:11px; color:var(--text-soft); margin-top:2px;">${detail}</div>`;
+    if (!a.pushover_ok && a.pushover_error) {
+      deliveryNote = `<div style="font-size:11px; color:var(--text-soft); margin-top:2px;">Pushover: ${a.pushover_error}</div>`;
     }
     return `<div class="row" style="border-bottom:1px solid var(--border); padding:10px 0; align-items:flex-start;">
       <span class="row-label" style="display:flex; flex-direction:column; gap:2px; flex:1; min-width:0;">
