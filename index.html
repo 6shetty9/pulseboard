@@ -143,7 +143,19 @@ input:checked + .slider:before { transform: translateX(20px); }
   <span class="logo-name">PulseBoard</span>
   <div class="topbar-right">
     <span class="pill pill-off" id="monitorPill">Monitor off</span>
-    <button class="btn" id="monitorToggleBtn" onclick="toggleMonitor()">Pause alerts</button>
+    <!-- Pause-alerts control. When not paused: a button that opens a duration
+         menu. When paused: a "Resume (1h 23m)" button with a live countdown.
+         Backed by /alerts/pause on the bridge — per-VIN with explicit expiry. -->
+    <div id="pauseAlertsControl" style="position:relative; display:inline-block;">
+      <button class="btn" id="pauseAlertsBtn" onclick="togglePauseMenu()">Pause alerts</button>
+      <div id="pauseAlertsMenu" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px; box-shadow:0 4px 12px rgba(0,0,0,.08); z-index:20; min-width:140px;">
+        <div style="font-size:11px; color:var(--text-soft); padding:4px 8px; text-transform:uppercase; letter-spacing:.5px;">Pause for…</div>
+        <button class="btn" style="width:100%; text-align:left; padding:6px 8px; background:transparent;" onclick="pauseAlerts(1)">1 hour</button>
+        <button class="btn" style="width:100%; text-align:left; padding:6px 8px; background:transparent;" onclick="pauseAlerts(4)">4 hours</button>
+        <button class="btn" style="width:100%; text-align:left; padding:6px 8px; background:transparent;" onclick="pauseAlerts(8)">8 hours</button>
+        <button class="btn" style="width:100%; text-align:left; padding:6px 8px; background:transparent;" onclick="pauseAlertsCustom()">Custom…</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1491,6 +1503,7 @@ async function showDash() {
   refreshLastSeen();
   loadVehicleCard();
   loadDriveSessions();
+  refreshPauseState();  // Sync pause-button state with bridge on initial dashboard load.
 }
 
 function showTab(name, el) {
@@ -1562,6 +1575,7 @@ function switchVehicle(id) {
   loadZones();
   loadSchedules();
   updateLiveDisplay();
+  refreshPauseState();  // Pause is per-VIN; flip button to match new vehicle.
 }
 
 async function loadVehicleCard() {
@@ -1707,41 +1721,13 @@ async function wakeVehicle() {
 }
 
 function toggleMonitor() {
-  // NOTE: This button is in a transitional state (Phase 2 of alerts work,
-  // Jun 4 2026). The label has been renamed to "Pause alerts" but the
-  // function still does what the legacy "Start/Stop monitor" toggle did —
-  // it just doesn't do anything user-visible anymore since the browser-side
-  // detection it gated has been migrated to the bridge (passive.go).
-  //
-  // Phase 3 backlog: wire this button to actually POST a pause flag to the
-  // bridge that suppresses all alerts for N hours. Until then, clicking is
-  // a no-op.
-  if (S.monitoring) {
-    S.monitoring = false;
-    document.getElementById('monitorPill').textContent = 'Monitor off';
-    document.getElementById('monitorPill').className = 'pill pill-off';
-    document.getElementById('monitorToggleBtn').textContent = 'Pause alerts';
-    document.getElementById('liveIndicator').style.display = 'none';
-    const np = document.getElementById('nextPoll'); if (np) np.textContent = '—';
-    const ps = document.getElementById('pollStatus'); if (ps) ps.textContent = 'Stopped';
-  } else {
-    S.monitoring = true;
-    document.getElementById('monitorPill').textContent = 'Live';
-    document.getElementById('monitorPill').className = 'pill pill-live';
-    document.getElementById('monitorToggleBtn').textContent = 'Resume alerts';
-    document.getElementById('liveIndicator').style.display = 'flex';
-    const ps = document.getElementById('pollStatus'); if (ps) ps.textContent = 'Active (telemetry)';
-    const np = document.getElementById('nextPoll'); if (np) np.textContent = 'live';
-    // Seed the passive-state baselines from current cached telemetry so we don't
-    // false-alert on the first message after enabling.
-    const st = pbLiveStateByVin[S.vehicleVin];
-    if (st) {
-      st._lastLocked = st.Locked;
-      st._sentryWasOn = !(st.SentryMode === 'SentryModeStateOff' || st.SentryMode === 'SentryModeStateIdle');
-      st._lowBattAlerted = false;
-    }
-    document.getElementById('lastPollTime').textContent = new Date().toLocaleTimeString();
-  }
+  // Legacy stub. Phase 3 of the alerts work (Jun 4 2026) replaced this
+  // function's UI surface (the "Start monitor" / "Pause alerts" button)
+  // with the proper per-VIN pause control — see togglePauseMenu and
+  // pauseAlerts() below. This stub remains only to avoid breaking any
+  // stale references that might still exist. Safe to delete in a future
+  // cleanup once we've confirmed nothing calls it.
+  console.warn('toggleMonitor() is deprecated — use the pause-alerts control');
 }
 
 // Monitoring is now driven entirely by the live telemetry stream (handleTelemetryEvent).
@@ -4948,6 +4934,198 @@ async function setAlertPref(vin, kind, field, value) {
 
 // Deterrent selectors are populated by loadDeterrentFromBridge() inside
 // loadCfgToForm(); no separate initialization needed.
+
+// ---- Pause alerts (top-bar control) -----------------------------------------
+//
+// Per-VIN, time-bounded mute. Backed by /alerts/pause on the bridge — see
+// alertpause.go. The button operates on whichever vehicle is currently
+// selected (S.vehicleVin) since pause is per-VIN and the top bar already
+// scopes everything to that vehicle.
+//
+// State machine:
+//   not paused        → button "Pause alerts" → click opens duration menu
+//   paused, time left → button "Resume (1h 23m)" with live countdown
+//   countdown reaches 0 → silently flip back to "Pause alerts" (server-side
+//                          the pause already expired; we just match it)
+//
+// The countdown is updated by a single setInterval that ticks every second.
+
+let pauseAlertsState = {
+  paused: false,
+  until: 0,        // Unix seconds
+  vin: null,       // which VIN is paused (just for safety/log purposes)
+  tickHandle: null,
+};
+
+function togglePauseMenu() {
+  // If currently paused, this button is a one-click "Resume" — no menu.
+  if (pauseAlertsState.paused) {
+    resumeAlerts();
+    return;
+  }
+  // Otherwise open the duration menu.
+  const menu = document.getElementById('pauseAlertsMenu');
+  if (!menu) return;
+  menu.style.display = (menu.style.display === 'none') ? 'block' : 'none';
+}
+
+// Click outside the menu to dismiss. Attached once at page load.
+document.addEventListener('click', (e) => {
+  const control = document.getElementById('pauseAlertsControl');
+  const menu = document.getElementById('pauseAlertsMenu');
+  if (!control || !menu) return;
+  if (menu.style.display !== 'none' && !control.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
+
+async function pauseAlerts(hours) {
+  // Close the menu immediately for snappy UX (optimistic).
+  const menu = document.getElementById('pauseAlertsMenu');
+  if (menu) menu.style.display = 'none';
+
+  if (!S.vehicleVin) {
+    console.warn('pauseAlerts: no vehicle selected');
+    return;
+  }
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/alerts/pause?secret=${secret}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: S.vehicleVin, hours }),
+    });
+    if (!r.ok) {
+      console.error('pauseAlerts failed:', r.status);
+      return;
+    }
+    const data = await r.json();
+    pauseAlertsState = {
+      paused: true,
+      until: data.pause.until,
+      vin: S.vehicleVin,
+      tickHandle: pauseAlertsState.tickHandle, // keep ticker; renderPauseButton will manage it
+    };
+    renderPauseButton();
+  } catch (e) {
+    console.error('pauseAlerts error:', e);
+  }
+}
+
+function pauseAlertsCustom() {
+  // Simple prompt — keeps this lightweight. If we wanted a richer picker
+  // we'd build a real dialog, but a number prompt is honest for "how many
+  // hours" and avoids modal complexity.
+  const menu = document.getElementById('pauseAlertsMenu');
+  if (menu) menu.style.display = 'none';
+  const v = prompt('Pause for how many hours? (decimals OK, e.g. 0.5 = 30 min, max 168)', '2');
+  if (v === null) return; // cancelled
+  const hours = parseFloat(v);
+  if (!isFinite(hours) || hours <= 0 || hours > 168) {
+    alert('Invalid duration. Use a number between 0 and 168 hours.');
+    return;
+  }
+  pauseAlerts(hours);
+}
+
+async function resumeAlerts() {
+  if (!S.vehicleVin) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/alerts/resume?secret=${secret}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: S.vehicleVin }),
+    });
+    if (!r.ok) {
+      console.error('resumeAlerts failed:', r.status);
+      return;
+    }
+    pauseAlertsState.paused = false;
+    pauseAlertsState.until = 0;
+    pauseAlertsState.vin = null;
+    renderPauseButton();
+  } catch (e) {
+    console.error('resumeAlerts error:', e);
+  }
+}
+
+// Format remaining time as "1h 23m", "45m", or "30s". Used in the button
+// label while paused. Anything over 1 minute gets minute resolution; under
+// 1 minute shows seconds so users see meaningful change near expiry.
+function formatPauseRemaining(secondsLeft) {
+  if (secondsLeft <= 0) return '0s';
+  if (secondsLeft < 60) return `${secondsLeft}s`;
+  const minutesTotal = Math.floor(secondsLeft / 60);
+  if (minutesTotal < 60) return `${minutesTotal}m`;
+  const h = Math.floor(minutesTotal / 60);
+  const m = minutesTotal % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+function renderPauseButton() {
+  const btn = document.getElementById('pauseAlertsBtn');
+  if (!btn) return;
+  if (!pauseAlertsState.paused) {
+    btn.textContent = 'Pause alerts';
+    btn.style.background = '';
+    if (pauseAlertsState.tickHandle) {
+      clearInterval(pauseAlertsState.tickHandle);
+      pauseAlertsState.tickHandle = null;
+    }
+    return;
+  }
+  // Paused state — render countdown and start the ticker if not running.
+  const tick = () => {
+    const left = pauseAlertsState.until - Math.floor(Date.now() / 1000);
+    if (left <= 0) {
+      // Pause expired server-side; flip UI back to normal.
+      pauseAlertsState.paused = false;
+      pauseAlertsState.until = 0;
+      renderPauseButton();
+      return;
+    }
+    btn.textContent = `Resume (${formatPauseRemaining(left)})`;
+  };
+  tick();
+  // Style the button to make "we're paused" obvious without being garish.
+  btn.style.background = 'var(--text)';
+  btn.style.color = 'var(--bg)';
+  if (!pauseAlertsState.tickHandle) {
+    pauseAlertsState.tickHandle = setInterval(tick, 1000);
+  }
+}
+
+// Fetch current pause state from bridge. Called on initial load and whenever
+// the selected vehicle changes (so switching from a paused VIN to an active
+// one flips the button correctly).
+async function refreshPauseState() {
+  if (!S.vehicleVin) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/alerts/pause?secret=${secret}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    const mine = (data.pauses || {})[S.vehicleVin];
+    if (mine && mine.until > Math.floor(Date.now() / 1000)) {
+      pauseAlertsState.paused = true;
+      pauseAlertsState.until = mine.until;
+      pauseAlertsState.vin = S.vehicleVin;
+    } else {
+      pauseAlertsState.paused = false;
+      pauseAlertsState.until = 0;
+      pauseAlertsState.vin = null;
+    }
+    renderPauseButton();
+  } catch (e) {
+    // Non-fatal — leave UI in whatever state it's in.
+    console.log('refreshPauseState failed:', e);
+  }
+}
 </script>
 </body>
 </html>
