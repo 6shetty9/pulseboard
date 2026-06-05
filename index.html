@@ -33,6 +33,16 @@
     .btn-red:hover { background: #c93d3c; }
     .btn-green { background: var(--green-bg); color: var(--green-text); border-color: #97C459; }
     .btn-blue { background: #E6F1FB; color: var(--blue); border-color: #90C0E8; }
+    /* Paused-state for the pause-alerts button. Inverted styling so it's
+       visually unambiguous that the button is in a special active state
+       (currently muting alerts). Defined as a class — NOT applied via
+       inline style.background/color — because Jun 4 2026 we hit a real bug
+       where the inline-style reset path forgot to clear `color`, leaving
+       white text on a default background and a misleadingly greyed-out
+       button. CSS classes are atomic: toggling them off restores ALL
+       properties at once, no manual cleanup possible to forget. */
+    .btn-paused { background: var(--text); color: var(--bg); border-color: var(--text); }
+    .btn-paused:hover { background: var(--text); color: var(--bg); }
     .container { max-width: 960px; margin: 0 auto; padding: 1.5rem; }
     .tabs { display: flex; gap: 2px; margin-bottom: 1.25rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; width: fit-content; }
     .tab { padding: 6px 16px; font-size: 13px; border-radius: 7px; border: none; background: transparent; color: var(--muted); cursor: pointer; font-weight: 500; }
@@ -5071,7 +5081,12 @@ function renderPauseButton() {
   if (!btn) return;
   if (!pauseAlertsState.paused) {
     btn.textContent = 'Pause alerts';
-    btn.style.background = '';
+    // Remove the paused-state class. classList.remove handles ALL the
+    // CSS properties defined under .btn-paused (background, color,
+    // border-color) atomically — no manual cleanup, no risk of forgetting
+    // to reset one of them like we did on Jun 4 with the inline-style
+    // implementation that left white text on a light background.
+    btn.classList.remove('btn-paused');
     if (pauseAlertsState.tickHandle) {
       clearInterval(pauseAlertsState.tickHandle);
       pauseAlertsState.tickHandle = null;
@@ -5091,9 +5106,10 @@ function renderPauseButton() {
     btn.textContent = `Resume (${formatPauseRemaining(left)})`;
   };
   tick();
-  // Style the button to make "we're paused" obvious without being garish.
-  btn.style.background = 'var(--text)';
-  btn.style.color = 'var(--bg)';
+  // Apply the paused-state class. Idempotent — adding the same class twice
+  // is a no-op, which keeps this safe to call repeatedly from the ticker
+  // (which we DON'T do; tick() only mutates textContent. But defensive.)
+  btn.classList.add('btn-paused');
   if (!pauseAlertsState.tickHandle) {
     pauseAlertsState.tickHandle = setInterval(tick, 1000);
   }
