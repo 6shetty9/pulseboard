@@ -2938,7 +2938,7 @@ async function loadMileage() {
     });
     const months = Object.keys(byMonth).sort();
     const name = (S.vehicles.find(v=>v.vin===vin)||{}).name || 'Vehicle';
-    perVehicle.push({ vin, name, sessions, charges, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6), odoCanvasId: 'odoChart_' + vin.slice(-6) });
+    perVehicle.push({ vin, name, sessions, byMonth, months, canvasId: 'mileageChart_' + vin.slice(-6), odoCanvasId: 'odoChart_' + vin.slice(-6) });
   }
 
   const rangeLabel = rangeLabelFor(chartRangeDays);
