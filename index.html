@@ -2530,47 +2530,51 @@ async function loadDriveSessions() {
 
   try {
     let allSessions = [];
-    // Per-VIN charging history, ordered by end_ts ascending so the "find most
-    // recent prior charge" lookup is a single reverse-walk.
-    const chargesByVin = {};
 
     for (const vin of vins) {
       const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${vin}&limit=500`);
       const d = await r.json();
       (d.sessions || []).forEach(s => { s._vin = vin; allSessions.push(s); });
-
-      // Also fetch charging sessions for this VIN — needed to attribute drive cost
-      // to the most recent prior charge's rate. We deliberately fetch with a high
-      // limit so even an old drive can find its prior charge.
-      try {
-        const cr = await fetch(`${BRIDGE_BASE}/charging/sessions?secret=${secret}&vin=${vin}&limit=500`);
-        const cd = await cr.json();
-        const list = (cd.sessions || [])
-          .filter(s => s.rate_used > 0 && s.end_ts > 0)
-          .sort((a, b) => a.end_ts - b.end_ts); // ascending — newest at end
-        chargesByVin[vin] = list;
-      } catch (e) {
-        console.warn('[drives] charging fetch failed for', vin, e);
-        chargesByVin[vin] = [];
-      }
     }
+    // Note: post-Phase-4 (Jun 4 2026), we no longer fetch /charging/sessions
+    // here. Cost is bridge-frozen on each drive row (cost_usd / rate_used /
+    // cost_source) so costForDrive() can derive everything from `s` alone.
 
     // costForDrive: returns {rate, source} for a drive, or {rate: null, source: null}
-    // if no rate could be determined. 'source' is 'charge' (prior charge), 'fallback'
-    // (S.kwhRate from Settings), or null (no rate available, no cost shown).
+    // if no rate could be determined.
+    //
+    // Phase 4 (Jun 4 2026): cost is now FROZEN on the bridge at drive-detection
+    // time. If `s.cost_usd` is present, we use it directly — that's the
+    // authoritative number, immune to later edits of the charge that fed it.
+    // Falls back to the legacy browser-side lookup ONLY when:
+    //   (a) the bridge didn't compute one (no prior charge existed at the time
+    //       the drive was detected — `cost_usd == null`)
+    //   (b) the user has set S.kwhRate in Settings
+    // In that fallback case, the rendered cost is italic-gray to signal
+    // "estimate from your kWh-rate setting" vs "real attributed cost."
+    //
+    // 'source' values: 'charge_frozen' (from bridge), 'fallback' (browser
+    // S.kwhRate), or null (nothing available).
     function costForDrive(s) {
-      const charges = chargesByVin[s._vin] || [];
-      // Reverse-walk to find the most recent charge whose end_ts < drive's start_ts.
-      // Since charges are sorted ascending by end_ts, we iterate from the tail.
-      for (let i = charges.length - 1; i >= 0; i--) {
-        if (charges[i].end_ts < s.start_ts) {
-          return { rate: charges[i].rate_used, source: 'charge' };
-        }
+      // Path 1: bridge gave us a cost. Trust it.
+      if (s.cost_usd != null && s.rate_used != null) {
+        return {
+          rate: s.rate_used,
+          cost: s.cost_usd,
+          source: 'charge_frozen',
+        };
       }
-      if (S.kwhRate && S.kwhRate > 0) {
-        return { rate: S.kwhRate, source: 'fallback' };
+      // Path 2: bridge had no prior charge to attribute to. Browser falls back
+      // to the user's Settings kWh rate. Compute cost from rate × energy here
+      // since the bridge couldn't.
+      if (S.kwhRate && S.kwhRate > 0 && s.energy_used_kwh > 0) {
+        return {
+          rate: S.kwhRate,
+          cost: s.energy_used_kwh * S.kwhRate,
+          source: 'fallback',
+        };
       }
-      return { rate: null, source: null };
+      return { rate: null, cost: null, source: null };
     }
 
     // Filter to the selected period (0 = all time), newest first.
@@ -2600,15 +2604,22 @@ async function loadDriveSessions() {
 
     // Per-drive cost: sum where we have a rate. Drives with no resolvable rate
     // don't contribute to the total (their per-row display also omits cost).
+    //
+    // Post-Phase-4 (Jun 4 2026): costForDrive returns {rate, cost, source}
+    // where `cost` is either the bridge-frozen value (source='charge_frozen')
+    // or computed from S.kwhRate × energy (source='fallback'). We use `c.cost`
+    // directly rather than recomputing — that way bridge-attributed drives
+    // reflect the rate at THEIR detection time, not whatever the most recent
+    // charge has now.
     let totalCost = 0;
     let costedKWh = 0;
     let hasAnyChargeRate = false;
     for (const s of validEnergy) {
       const c = costForDrive(s);
-      if (c.rate != null) {
-        totalCost += s.energy_used_kwh * c.rate;
+      if (c.cost != null) {
+        totalCost += c.cost;
         costedKWh += s.energy_used_kwh;
-        if (c.source === 'charge') hasAnyChargeRate = true;
+        if (c.source === 'charge_frozen') hasAnyChargeRate = true;
       }
     }
     const hasCost = costedKWh > 0;
@@ -2659,15 +2670,14 @@ async function loadDriveSessions() {
         ? `${s.start_place || '?'} → ${s.end_place || '?'}`
         : when;
 
-      // Per-row cost using the previous-charge rate (or fallback).
+      // Per-row cost. Bridge-frozen when available, S.kwhRate fallback when
+      // not — see costForDrive(). Italicize the fallback case as a visual cue
+      // ("estimate from your setting" vs "real attributed cost").
       let costStr = '';
       if (s.energy_used_kwh > 0) {
         const c = costForDrive(s);
-        if (c.rate != null) {
-          const amount = (s.energy_used_kwh * c.rate).toFixed(2);
-          // Tiny visual cue: italicize if this is the Settings fallback, not a
-          // real charge session rate — distinguishes "real money from a charge"
-          // from "ballpark estimate."
+        if (c.cost != null) {
+          const amount = c.cost.toFixed(2);
           if (c.source === 'fallback') {
             costStr = ` &nbsp;·&nbsp; <span style="font-style:italic; color:var(--text-soft);">~$${amount}</span>`;
           } else {
@@ -2890,41 +2900,31 @@ async function loadMileage() {
   const now = Math.floor(Date.now()/1000);
   const cutoff = chartRangeDays > 0 ? now - chartRangeDays*86400 : 0;
 
-  // Fetch + aggregate once per vehicle, then render table and chart from the same data.
-  // For cost tiles, also fetch charging sessions so we can attach the previous-charge
-  // rate to each drive (same logic as the Drives tab).
+  // Fetch drives. Post-Phase-4 (Jun 4 2026), drives carry bridge-frozen
+  // cost_usd / rate_used / cost_source from /sessions/driving, so we no
+  // longer need a parallel /charging/sessions fetch here for cost attribution.
+  // Falls back to S.kwhRate × energy when the bridge returned null cost
+  // (drive had no prior charging session to attribute to).
   const perVehicle = [];
   for (const vin of vins) {
     let sessions = [];
-    let charges = [];
     try {
       const r = await fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${vin}&limit=2000`);
       const d = await r.json();
       sessions = (d.sessions || []).filter(s => s.start_ts >= cutoff && s.distance_mi > 0);
     } catch(e) { console.log('mileage load failed', e); }
-    try {
-      const cr = await fetch(`${BRIDGE_BASE}/charging/sessions?secret=${secret}&vin=${vin}&limit=500`);
-      const cd = await cr.json();
-      charges = (cd.sessions || [])
-        .filter(s => s.rate_used > 0 && s.end_ts > 0)
-        .sort((a, b) => a.end_ts - b.end_ts);
-    } catch(e) { console.log('mileage charges load failed', e); }
 
-    // Attach _cost to each drive using the previous-charging-point lookup.
-    // Same logic as loadDriveSessions / costForDrive — kept here inline to
-    // avoid a dependency between tabs. If neither a prior charge nor
-    // S.kwhRate is available, _cost stays 0 and the drive doesn't contribute
-    // to the cost extrapolation.
+    // Attach _cost: prefer bridge-frozen, fall back to S.kwhRate. Same policy
+    // as costForDrive() — kept inline because this tab doesn't share scope
+    // with the Drives tab function.
     sessions.forEach(s => {
       s._cost = 0;
       if (!(s.energy_used_kwh > 0)) return;
-      // Reverse-walk charges to find the most recent end_ts < drive.start_ts.
-      let rate = 0;
-      for (let i = charges.length - 1; i >= 0; i--) {
-        if (charges[i].end_ts < s.start_ts) { rate = charges[i].rate_used; break; }
+      if (s.cost_usd != null) {
+        s._cost = s.cost_usd;
+      } else if (S.kwhRate > 0) {
+        s._cost = s.energy_used_kwh * S.kwhRate;
       }
-      if (rate <= 0 && S.kwhRate > 0) rate = S.kwhRate;
-      if (rate > 0) s._cost = s.energy_used_kwh * rate;
     });
 
     const byMonth = {};
