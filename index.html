@@ -450,6 +450,20 @@ input:checked + .slider:before { transform: translateX(20px); }
           <div style="font-size:12px; color:var(--text-soft); margin-bottom:10px;">SOC over time with a 30-day trailing median in 2-hour buckets. The 20% and 80% guides mark Tesla's recommended daily range.</div>
           <div id="batteryPatternsContent"><div class="empty">Loading…</div></div>
         </div>
+        <!-- Battery degradation chart (Phase 5, Jun 4 2026). For each charging
+             session ending at >=50% SOC, samples EstBatteryRange near the
+             session's end_ts and normalizes to "rated range at 100% SOC."
+             Plotted as a scatter with an OLS trend line. Headline shows
+             percentage change implied by the trend over the window. -->
+        <div class="card">
+          <div class="card-title">🪫 Battery degradation</div>
+          <div style="font-size:12px; color:var(--text-soft); margin-bottom:10px; line-height:1.5;">
+            Estimates capacity loss over time. Each dot is one charge session, normalized to "rated range at 100% SOC."
+            The line is the OLS best fit. Real degradation shows as a steady downward slope across many points;
+            single-dot dips are usually cold weather, not loss.
+          </div>
+          <div id="batteryDegradationContent"><div class="empty">Loading…</div></div>
+        </div>
       </div>
     </div>
 
@@ -3443,6 +3457,12 @@ async function loadBatteryPatterns() {
   const container = document.getElementById('batteryPatternsContent');
   if (!container) return;
 
+  // Phase 5 (Jun 4 2026): kick off the degradation chart in parallel with the
+  // patterns chart. Independent endpoint, independent rendering — failure of
+  // one doesn't block the other. The function awaits internally; we don't
+  // await here because they share no data.
+  loadBatteryDegradation();
+
   // Destroy any prior charts before re-rendering (Chart.js leaks memory otherwise).
   Object.values(batteryCharts).forEach(c => { try { c.destroy(); } catch(e){} });
   batteryCharts = {};
@@ -3633,6 +3653,179 @@ async function recalcChargeCosts(btn) {
     await loadCharging();
   } catch(e) { console.log('recalc failed', e); }
   btn.textContent = orig; btn.disabled = false;
+}
+
+// ---- Battery degradation (Phase 5, Jun 4 2026) -----------------------------
+//
+// Per-vehicle scatter + trend line showing "rated range at 100% SOC" over time.
+// Backed by GET /battery/degradation on the bridge. Each dot is one charging
+// session's EstBatteryRange sampled at end_ts and normalized to 100%.
+//
+// Renders one card section per selected vehicle. If <5 sample points exist,
+// we render the scatter without a trend line and show the bridge's "not
+// enough data yet" note.
+
+let degradationCharts = {};
+
+async function loadBatteryDegradation() {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const container = document.getElementById('batteryDegradationContent');
+  if (!container) return;
+
+  // Destroy any prior charts before re-rendering (Chart.js leaks memory).
+  Object.values(degradationCharts).forEach(c => { try { c.destroy(); } catch(e){} });
+  degradationCharts = {};
+
+  const vins = chartSelectedVins();
+  if (vins.length === 0) {
+    container.innerHTML = '<div class="empty">No vehicle selected.</div>';
+    return;
+  }
+
+  // Fetch per-vehicle. We use chartRangeDays directly — 0 means "all time"
+  // which the bridge treats as no cutoff.
+  const days = chartRangeDays > 0 ? chartRangeDays : 0;
+  const perVehicle = [];
+  for (const vin of vins) {
+    try {
+      const r = await fetch(`${BRIDGE_BASE}/battery/degradation?secret=${secret}&vin=${vin}&days=${days}`);
+      if (!r.ok) {
+        perVehicle.push({ vin, error: `HTTP ${r.status}` });
+        continue;
+      }
+      const data = await r.json();
+      perVehicle.push({ vin, data });
+    } catch (e) {
+      perVehicle.push({ vin, error: e.message });
+    }
+  }
+
+  // Render each vehicle as its own section. Headline number on top, chart below.
+  let html = '';
+  perVehicle.forEach((pv, i) => {
+    const name = (S.vehicles.find(v => v.vin === pv.vin) || {}).name || 'Vehicle';
+    const shortName = name.replace('Tesla ', '');
+    const canvasId = 'degChart_' + pv.vin.slice(-6);
+    html += `<div style="margin-top:${i === 0 ? 0 : 22}px;">
+      <div style="font-weight:600; margin-bottom:6px;">${shortName}</div>`;
+    if (pv.error) {
+      html += `<div class="empty">Failed to load (${pv.error}).</div></div>`;
+      return;
+    }
+    const d = pv.data;
+    if (!d.points || d.points.length === 0) {
+      html += `<div class="empty">No charge sessions in this window.</div></div>`;
+      return;
+    }
+    // Headline. Three forms depending on data:
+    //   - Trend present: "−2.3 mi over 90 days (−0.8%)"
+    //   - Note from bridge: just show the note
+    //   - Single-VIN sparse case: show the note + render the scatter anyway
+    let headlineHtml = '';
+    if (d.degradation_pct != null && d.start_range_mi != null && d.end_range_mi != null) {
+      const lostMi = d.start_range_mi - d.end_range_mi;
+      const pct = d.degradation_pct;
+      const isGood = pct < 0; // negative = gained range = even healthier
+      // Display: "Est. degradation: -2.3 mi (-0.8%) over 90 days"
+      const sign = lostMi >= 0 ? '−' : '+';
+      const absLost = Math.abs(lostMi).toFixed(1);
+      const absPct = Math.abs(pct).toFixed(2);
+      const color = isGood ? 'var(--green, #3FB950)' : (pct > 3 ? '#E24B4A' : 'var(--text)');
+      headlineHtml = `<div style="font-size:13px; margin-bottom:8px;">
+        Est. degradation: <span style="color:${color}; font-weight:600;">${sign}${absLost} mi (${sign}${absPct}%)</span>
+        <span style="color:var(--text-soft);"> over ${d.window_days || days || 'all'} days, from ${d.points.length} charge sessions</span>
+      </div>`;
+    } else if (d.note) {
+      headlineHtml = `<div style="font-size:12px; color:var(--text-soft); margin-bottom:8px;">${d.note}</div>`;
+    }
+    html += headlineHtml;
+    html += `<div style="position:relative; height:240px;"><canvas id="${canvasId}"></canvas></div></div>`;
+  });
+  container.innerHTML = html;
+
+  // Now create the actual Chart.js charts. We do this AFTER setting innerHTML
+  // because Chart.js needs the canvas elements to exist in the DOM.
+  perVehicle.forEach(pv => {
+    if (pv.error || !pv.data || !pv.data.points || pv.data.points.length === 0) return;
+    const canvasId = 'degChart_' + pv.vin.slice(-6);
+    const ctx = document.getElementById(canvasId);
+    if (!ctx) return;
+    const color = (CAR_COLORS[pv.vin] || {}).solid || '#3B82F6';
+    const softColor = (CAR_COLORS[pv.vin] || {}).soft || 'rgba(59,130,246,.6)';
+    const d = pv.data;
+
+    // Scatter data
+    const scatterData = d.points.map(p => ({ x: p.ts * 1000, y: p.rated_at_100 }));
+
+    // Trend line — only if the bridge gave us a slope.
+    const datasets = [{
+      label: 'Charge samples',
+      data: scatterData,
+      backgroundColor: softColor,
+      borderColor: color,
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      showLine: false,
+      type: 'scatter',
+    }];
+    if (d.trend_slope_mi_per_day != null && d.trend_intercept_mi != null && d.points.length >= 5) {
+      const firstTS = d.points[0].ts;
+      const lastTS = d.points[d.points.length - 1].ts;
+      // Slope is mi/day (bridge converts from per-second before returning).
+      // For the trend-line endpoints we need the y-value at lastTS:
+      //   y(lastTS) = intercept + slope_per_day * (days_between_first_and_last)
+      const slopePerDay = d.trend_slope_mi_per_day;
+      const intercept = d.trend_intercept_mi;
+      const daysBetween = (lastTS - firstTS) / 86400;
+      const y1 = intercept;                                  // at first sample (x=0 by definition)
+      const y2 = intercept + slopePerDay * daysBetween;      // at last sample
+      datasets.push({
+        label: 'Trend',
+        data: [{ x: firstTS * 1000, y: y1 }, { x: lastTS * 1000, y: y2 }],
+        borderColor: color,
+        borderDash: [6, 4],
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: false,
+        type: 'line',
+      });
+    }
+
+    degradationCharts[pv.vin] = new Chart(ctx, {
+      type: 'scatter',
+      data: { datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const ms = ctx.parsed.x;
+                const y = ctx.parsed.y;
+                const dt = new Date(ms);
+                return `${dt.toLocaleDateString()}: ${y.toFixed(1)} mi at 100%`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'month', tooltipFormat: 'MMM d, yyyy' },
+            ticks: { color: 'var(--text-soft)', font: { size: 10 } },
+            grid: { color: 'rgba(0,0,0,.05)' },
+          },
+          y: {
+            title: { display: true, text: 'Rated range at 100% SOC (mi)', color: 'var(--text-soft)', font: { size: 11 } },
+            ticks: { color: 'var(--text-soft)', font: { size: 10 } },
+            grid: { color: 'rgba(0,0,0,.05)' },
+          },
+        }
+      }
+    });
+  });
 }
 
 async function loadCharging() {
