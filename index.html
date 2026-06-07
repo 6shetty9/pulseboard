@@ -210,6 +210,7 @@ input:checked + .slider:before { transform: translateX(20px); }
       <button class="tab" onclick="showTab('alerts',this)">Alert log</button>
       <button class="tab" onclick="showTab('notify',this)">Notifications</button>
       <button class="tab" onclick="showTab('settings',this)">Settings</button>
+      <button class="tab" onclick="showTab('health',this)">Health</button>
     </div>
 
     <div id="tab-monitor" style="display:none;">
@@ -759,6 +760,46 @@ input:checked + .slider:before { transform: translateX(20px); }
     </div>
   </div>
 </div>
+
+    <!-- Health tab — operator diagnostics. Read-only in v1. All data
+         fetched from bridge /admin/health/* endpoints, gated by
+         pb_proxy_secret. Auto-refreshes every 30s while tab is open;
+         polling stops when tab is hidden (mirrors alert-log pattern). -->
+    <div id="tab-health" style="display:none;">
+      <div class="card">
+        <div class="card-title">Token health</div>
+        <div id="healthTokensBody">
+          <div class="empty" style="padding:14px 0;">Loading…</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Telemetry health</div>
+        <div style="font-size:11px; color:var(--hint); margin-bottom:10px; line-height:1.5;">
+          Last event received per vehicle, and event count for the last 24 hours. Long gaps usually mean the car is asleep — but a vehicle with no events for over 24h is worth investigating.
+        </div>
+        <div id="healthTelemetryBody">
+          <div class="empty" style="padding:14px 0;">Loading…</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Services</div>
+        <div id="healthServicesBody">
+          <div class="empty" style="padding:14px 0;">Loading…</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Recent errors</div>
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+          <div style="font-size:11px; color:var(--hint); line-height:1.5;">
+            Last journal lines from ws-bridge matching "error" or "fatal". Most "vehicle offline or asleep" 408s are benign.
+          </div>
+          <button class="btn" onclick="loadHealthErrors()" style="font-size:12px; padding:6px 12px;">Refresh</button>
+        </div>
+        <div id="healthErrorsBody">
+          <div class="empty" style="padding:14px 0;">Loading…</div>
+        </div>
+      </div>
+    </div>
 
 <script>
 const REDIRECT = 'https://6shetty9.github.io/pulseboard/callback';
@@ -1531,7 +1572,7 @@ async function showDash() {
 }
 
 function showTab(name, el) {
-  ['monitor','vehicle','charge','battery','charts','geofences','schedules','alerts','notify','settings'].forEach(t => {
+  ['monitor','vehicle','charge','battery','charts','geofences','schedules','alerts','notify','settings','health'].forEach(t => {
     document.getElementById('tab-'+t).style.display = t===name ? 'block' : 'none';
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1554,6 +1595,11 @@ function showTab(name, el) {
     if (ri && S.kwhRate) ri.value = S.kwhRate;
     loadOutOfParkAlert();
     loadAlertPrefs();
+  }
+  if (name === 'health') {
+    startHealthPolling();
+  } else {
+    stopHealthPolling();
   }
 }
 
@@ -2070,6 +2116,213 @@ function stopAlertLogPolling() {
   if (alertLogPollTimer) {
     clearInterval(alertLogPollTimer);
     alertLogPollTimer = null;
+  }
+}
+
+// ── Health tab ───────────────────────────────────────────
+// Operator diagnostics. Read-only in v1. Pulls from bridge
+// /admin/health/* endpoints. Polls every 30s while tab is open;
+// polling stops when leaving the tab (see showTab).
+
+let healthPollTimer = null;
+
+function startHealthPolling() {
+  stopHealthPolling();
+  loadHealthAll();
+  loadHealthErrors();
+  healthPollTimer = setInterval(loadHealthAll, 30000);
+}
+
+function stopHealthPolling() {
+  if (healthPollTimer) {
+    clearInterval(healthPollTimer);
+    healthPollTimer = null;
+  }
+}
+
+// Fetch all the live-data endpoints in parallel. Errors endpoint is
+// manual-refresh only (it doesn't change rapidly and we don't want to
+// spam journalctl every 30s).
+async function loadHealthAll() {
+  loadHealthTokens();
+  loadHealthTelemetry();
+  loadHealthServices();
+}
+
+// Format helpers ------------------------------------------------------
+
+function fmtRelTime(seconds) {
+  if (seconds == null || seconds < 0) return '—';
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+  return Math.floor(seconds / 86400) + 'd';
+}
+
+function fmtAbsTime(unixSec) {
+  if (!unixSec) return '—';
+  return new Date(unixSec * 1000).toLocaleString([], {
+    month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', second: '2-digit'
+  });
+}
+
+// Pill helper. severity: 'ok' (green), 'warn' (amber), 'bad' (red).
+function healthPill(severity, label) {
+  const bg = severity === 'ok'   ? 'var(--green-bg)' :
+             severity === 'warn' ? '#FEF3C7'          :
+                                   'var(--red-bg)';
+  const fg = severity === 'ok'   ? 'var(--green-text)' :
+             severity === 'warn' ? '#92400E'          :
+                                   'var(--red-text)';
+  return `<span style="display:inline-block; padding:3px 10px; border-radius:12px; background:${bg}; color:${fg}; font-size:11px; font-weight:600;">${label}</span>`;
+}
+
+// Token health -------------------------------------------------------
+
+async function loadHealthTokens() {
+  const body = document.getElementById('healthTokensBody');
+  if (!body) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) {
+    body.innerHTML = '<div class="empty">No pb_proxy_secret in localStorage. Set it to view health.</div>';
+    return;
+  }
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/admin/health/tokens?secret=${secret}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const ref = d.refresh || {};
+    // Health classification.
+    //   bad : alert_fired (the bridge has already given up via Pushover)
+    //   warn: no token, OR consecutive_failures > 0, OR <10 min to expiry
+    //   ok  : token present, no failures, plenty of time
+    let sev = 'ok', label = 'Healthy';
+    if (ref.alert_fired) { sev = 'bad'; label = 'Refresh chain dead'; }
+    else if (!d.token_available) { sev = 'bad'; label = 'No token'; }
+    else if (ref.consecutive_failures > 0) { sev = 'warn'; label = `${ref.consecutive_failures} recent failure(s)`; }
+    else if (d.expires_in_seconds != null && d.expires_in_seconds < 600) { sev = 'warn'; label = 'Expiring soon'; }
+    let html = `<div class="row"><span class="row-label">Status</span><span class="row-val">${healthPill(sev, label)}</span></div>`;
+    html += `<div class="row"><span class="row-label">Token available</span><span class="row-val">${d.token_available ? 'Yes' : 'No'}</span></div>`;
+    if (d.expires_at) {
+      html += `<div class="row"><span class="row-label">Expires</span><span class="row-val">${fmtAbsTime(d.expires_at)} <span style="color:var(--hint);">(in ${fmtRelTime(d.expires_in_seconds)})</span></span></div>`;
+    }
+    if (d.updated_at) {
+      const now = Math.floor(Date.now() / 1000);
+      html += `<div class="row"><span class="row-label">Last refreshed</span><span class="row-val">${fmtAbsTime(d.updated_at)} <span style="color:var(--hint);">(${fmtRelTime(now - d.updated_at)} ago)</span></span></div>`;
+    }
+    html += `<div class="row"><span class="row-label">Consecutive failures</span><span class="row-val">${ref.consecutive_failures || 0}</span></div>`;
+    if (ref.last_error) {
+      html += `<div class="row"><span class="row-label">Last error</span><span class="row-val" style="font-size:11px; color:var(--red-text); max-width:60%; word-break:break-word;">${ref.last_error}</span></div>`;
+    }
+    if (ref.error_category) {
+      html += `<div class="row"><span class="row-label">Category</span><span class="row-val" style="font-size:12px;">${ref.error_category}</span></div>`;
+    }
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="color:var(--red-text);">Failed to load: ${e.message}</div>`;
+  }
+}
+
+// Telemetry health ---------------------------------------------------
+
+async function loadHealthTelemetry() {
+  const body = document.getElementById('healthTelemetryBody');
+  if (!body) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/admin/health/telemetry?secret=${secret}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d.vehicles || d.vehicles.length === 0) {
+      body.innerHTML = '<div class="empty">No telemetry data yet.</div>';
+      return;
+    }
+    let html = '';
+    d.vehicles.forEach(v => {
+      // Friendly name from S.vehicles if known.
+      const vobj = (S.vehicles || []).find(x => x.vin === v.vin);
+      const name = vobj ? (vobj.name || v.vin.slice(-4)) : v.vin.slice(-4);
+      // Health: ok <1h, warn 1-24h, bad >24h
+      let sev = 'ok', label = 'Live';
+      if (v.seconds_since_last_event > 86400) { sev = 'bad'; label = 'Stale >24h'; }
+      else if (v.seconds_since_last_event > 3600) { sev = 'warn'; label = 'Asleep / >1h'; }
+      html += `<div style="padding:10px 0; border-bottom:1px solid var(--border);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+          <span style="font-weight:600;">${name}</span>
+          ${healthPill(sev, label)}
+        </div>
+        <div class="row"><span class="row-label">Last event</span><span class="row-val">${fmtRelTime(v.seconds_since_last_event)} ago <span style="color:var(--hint);">(${v.last_event_field || '—'})</span></span></div>
+        <div class="row"><span class="row-label">Events last 24h</span><span class="row-val">${v.count_last_24h.toLocaleString()}</span></div>
+      </div>`;
+    });
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="color:var(--red-text);">Failed to load: ${e.message}</div>`;
+  }
+}
+
+// Service status -----------------------------------------------------
+
+async function loadHealthServices() {
+  const body = document.getElementById('healthServicesBody');
+  if (!body) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/admin/health/services?secret=${secret}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    let html = `<div class="row"><span class="row-label">Bridge uptime</span><span class="row-val">${fmtRelTime(d.bridge_uptime_seconds)} <span style="color:var(--hint);">(started ${fmtAbsTime(d.bridge_started_at)})</span></span></div>`;
+    (d.services || []).forEach(s => {
+      const sev = s.reachable ? 'ok' : 'bad';
+      const label = s.reachable ? `${s.http_code || 'OK'} · ${s.latency_ms}ms` : 'Unreachable';
+      html += `<div class="row"><span class="row-label">${s.name}</span><span class="row-val">${healthPill(sev, label)}</span></div>`;
+      if (s.error) {
+        html += `<div class="row"><span class="row-label"></span><span class="row-val" style="font-size:11px; color:var(--red-text);">${s.error}</span></div>`;
+      }
+    });
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="color:var(--red-text);">Failed to load: ${e.message}</div>`;
+  }
+}
+
+// Recent errors ------------------------------------------------------
+
+async function loadHealthErrors() {
+  const body = document.getElementById('healthErrorsBody');
+  if (!body) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  body.innerHTML = '<div class="empty" style="padding:14px 0;">Loading…</div>';
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/admin/health/errors?secret=${secret}&limit=50`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const entries = d.entries || [];
+    if (entries.length === 0) {
+      body.innerHTML = '<div class="empty" style="padding:14px 0; color:var(--green-text);">No recent errors. 🎉</div>';
+      return;
+    }
+    // Style: monospace, scrollable, one line per entry.
+    let html = `<div style="font-family:ui-monospace,Menlo,Monaco,Consolas,monospace; font-size:11px; max-height:280px; overflow-y:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px;">`;
+    entries.forEach(e => {
+      // Color "seed: HTTP 408" benign-style differently from others.
+      const benign = e.line.includes('vehicle is offline or asleep');
+      const color = benign ? 'var(--hint)' : 'var(--text)';
+      html += `<div style="padding:3px 0; color:${color}; white-space:nowrap; overflow-x:auto;">${e.line.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div>`;
+    });
+    html += `</div>`;
+    html += `<div style="font-size:11px; color:var(--hint); margin-top:8px;">${entries.length} entries · grayed lines are benign (car asleep)</div>`;
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="color:var(--red-text);">Failed to load: ${e.message}</div>`;
   }
 }
 
