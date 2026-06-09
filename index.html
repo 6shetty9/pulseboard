@@ -2302,7 +2302,7 @@ async function loadHealthErrors() {
   if (!secret) return;
   body.innerHTML = '<div class="empty" style="padding:14px 0;">Loading…</div>';
   try {
-    const r = await fetch(`${BRIDGE_BASE}/admin/health/errors?secret=${secret}&limit=50`);
+    const r = await fetch(`${BRIDGE_BASE}/admin/health/errors?secret=${secret}&limit=50&include_benign=true`);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const entries = d.entries || [];
@@ -2314,7 +2314,7 @@ async function loadHealthErrors() {
     let html = `<div style="font-family:ui-monospace,Menlo,Monaco,Consolas,monospace; font-size:11px; max-height:280px; overflow-y:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px;">`;
     entries.forEach(e => {
       // Color "seed: HTTP 408" benign-style differently from others.
-      const benign = e.line.includes('vehicle is offline or asleep');
+      const benign = e.benign === true;
       const color = benign ? 'var(--hint)' : 'var(--text)';
       html += `<div style="padding:3px 0; color:${color}; white-space:nowrap; overflow-x:auto;">${e.line.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div>`;
     });
