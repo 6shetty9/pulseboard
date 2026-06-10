@@ -797,6 +797,15 @@ input:checked + .slider:before { transform: translateX(20px); }
           <div class="empty" style="padding:14px 0;">Loading…</div>
         </div>
       </div>
+      <div class="card">
+        <div class="card-title">Database</div>
+        <div style="font-size:11px; color:var(--hint); margin-bottom:10px; line-height:1.5;">
+          SQLite size, per-table row counts, and the top fields in the events table with their retention policy. Field policies seeded Jun 10, 2026 — see field_policy table. The purge kill-switch defaults to disabled; flipping requires explicit operator action via curl.
+        </div>
+        <div id="healthDbBody">
+          <div class="empty" style="padding:14px 0;">Loading…</div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -2147,6 +2156,7 @@ async function loadHealthAll() {
   loadHealthTokens();
   loadHealthTelemetry();
   loadHealthServices();
+  loadDbStats();
 }
 
 // Format helpers ------------------------------------------------------
@@ -2320,6 +2330,93 @@ async function loadHealthErrors() {
     });
     html += `</div>`;
     html += `<div style="font-size:11px; color:var(--hint); margin-top:8px;">${entries.length} entries · grayed lines are benign (car asleep)</div>`;
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="color:var(--red-text);">Failed to load: ${e.message}</div>`;
+  }
+}
+
+// Database stats ----------------------------------------------------
+// Hits /admin/db/stats and renders a card with:
+//   - DB size + WAL + events totals (top summary row)
+//   - Per-table row counts (compact list)
+//   - Top fields in events table with retention/tier (table)
+//   - Kill-switch state (read-only badge; flipping is curl-only by design)
+
+function fmtBytes(b) {
+  if (b == null || b === 0) return '0 B';
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1024*1024*1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+  return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function tierBadge(tier) {
+  // Color-code the 6 retention tiers + the default fallback.
+  // Long-keep is green (safe to keep), noise is amber (will be culled),
+  // others fall between.
+  const palette = {
+    long_keep: { bg:'var(--green-bg)',  fg:'var(--green-text)' },
+    security:  { bg:'#DBEAFE',          fg:'#1E3A8A' },
+    snapshot:  { bg:'#E0E7FF',          fg:'#3730A3' },
+    tire:      { bg:'#FCE7F3',          fg:'#9D174D' },
+    hvac:      { bg:'#F3E8FF',          fg:'#6B21A8' },
+    noise:     { bg:'#FEF3C7',          fg:'#92400E' },
+    default:   { bg:'var(--border)',    fg:'var(--muted)' },
+  };
+  const p = palette[tier] || palette.default;
+  return `<span style="background:${p.bg}; color:${p.fg}; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; letter-spacing:0.2px;">${tier}</span>`;
+}
+
+async function loadDbStats() {
+  const body = document.getElementById('healthDbBody');
+  if (!body) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/admin/db/stats?secret=${secret}&top=20`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+
+    // Section 1: summary row — DB size + WAL + total events + oldest event.
+    const oldestTxt = d.events_oldest_ts ? fmtAbsTime(d.events_oldest_ts) : '—';
+    const newestTxt = d.events_newest_ts ? fmtRelTime(Math.floor(Date.now()/1000) - d.events_newest_ts) : '—';
+    let html = '';
+    html += `<div class="row"><span class="row-label">DB size</span><span class="row-val">${fmtBytes(d.db_size_bytes)} <span style="color:var(--hint);">+ ${fmtBytes(d.wal_size_bytes)} WAL</span></span></div>`;
+    html += `<div class="row"><span class="row-label">Total events</span><span class="row-val">${(d.events_total || 0).toLocaleString()}</span></div>`;
+    html += `<div class="row"><span class="row-label">Oldest event</span><span class="row-val">${oldestTxt}</span></div>`;
+    html += `<div class="row"><span class="row-label">Newest event</span><span class="row-val">${newestTxt} ago</span></div>`;
+    const purgePill = d.purge_enabled ? healthPill('bad', 'ENABLED — purges can run') : healthPill('ok', 'Disabled');
+    html += `<div class="row"><span class="row-label">Purge kill-switch</span><span class="row-val">${purgePill}</span></div>`;
+
+    // Section 2: per-table row counts in a compact two-column grid.
+    html += `<div style="margin-top:16px; margin-bottom:8px; font-size:12px; color:var(--muted); font-weight:600;">Tables</div>`;
+    html += `<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 16px; font-size:12px;">`;
+    (d.tables || []).forEach(t => {
+      const isEvents = (t.name === 'events');
+      const labelStyle = isEvents ? 'font-weight:600;' : '';
+      const valStyle = isEvents ? 'font-weight:600;' : 'color:var(--muted);';
+      html += `<div style="display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--border);"><span style="${labelStyle}">${t.name}</span><span style="${valStyle}">${(t.rows || 0).toLocaleString()}</span></div>`;
+    });
+    html += `</div>`;
+
+    // Section 3: top fields with retention policy.
+    html += `<div style="margin-top:16px; margin-bottom:8px; font-size:12px; color:var(--muted); font-weight:600;">Top 20 fields in events</div>`;
+    html += `<div style="font-size:12px;">`;
+    html += `<div style="display:grid; grid-template-columns:1.5fr 0.7fr 0.5fr 1fr 0.7fr; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); font-size:11px; color:var(--hint); font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">
+      <span>Field</span><span style="text-align:right;">Rows</span><span style="text-align:right;">%</span><span>Tier</span><span style="text-align:right;">Retention</span>
+    </div>`;
+    (d.events_top_fields || []).forEach(f => {
+      html += `<div style="display:grid; grid-template-columns:1.5fr 0.7fr 0.5fr 1fr 0.7fr; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); align-items:center;">
+        <span style="font-family:ui-monospace,Menlo,Monaco,Consolas,monospace; font-size:11px;">${f.field}</span>
+        <span style="text-align:right;">${(f.rows || 0).toLocaleString()}</span>
+        <span style="text-align:right; color:var(--hint);">${f.pct}%</span>
+        <span>${tierBadge(f.tier || 'default')}</span>
+        <span style="text-align:right; color:var(--muted);">${f.retention_days}d</span>
+      </div>`;
+    });
+    html += `</div>`;
+
     body.innerHTML = html;
   } catch (e) {
     body.innerHTML = `<div class="empty" style="color:var(--red-text);">Failed to load: ${e.message}</div>`;
