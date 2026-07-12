@@ -311,7 +311,7 @@ input:checked + .slider:before { transform: translateX(20px); }
       <div class="card">
         <div class="card-title">How this works</div>
         <div style="font-size: 13px; color: var(--text-soft); line-height: 1.7;">
-          Normalized rated range = <code style="font-family:inherit; background:var(--bg); padding:1px 5px; border-radius:3px;">EstBatteryRange × 100 / Soc</code>.
+          Normalized rated range = <code style="font-family:inherit; background:var(--bg); padding:1px 5px; border-radius:3px;">RatedRange × 100 / Soc</code>.
           This estimates what the car's range <em>would</em> be at 100% charge, regardless of current SOC.
           Watching this value over months reveals real degradation, separated from day-to-day noise.<br><br>
           To keep the line clean, samples are filtered: SOC must be ≥ 30%, and the car must not have been in Drive/Reverse within ±5 min.
@@ -1239,7 +1239,7 @@ function updateVehicleCardFromTelemetry() {
       fill.className = 'battery-fill ' + (state.BatteryLevel >= 50 ? 'fill-green' : state.BatteryLevel >= 25 ? 'fill-amber' : 'fill-red');
     }
   }
-  if ('EstBatteryRange' in state) setText('vc-range', Math.round(state.EstBatteryRange));
+  if ('RatedRange' in state) setText('vc-range', Math.round(state.RatedRange));
   if ('ChargeLimitSoc' in state) setText('vc-limit', Math.round(state.ChargeLimitSoc));
   if ('DetailedChargeState' in state) setText('vc-charge', String(state.DetailedChargeState).replace('DetailedChargeState', '') || 'Stopped');
   if ('InsideTemp' in state) setText('vc-inside', Math.round(state.InsideTemp * 9/5 + 32) + '°F');
@@ -1252,6 +1252,15 @@ function updateVehicleCardFromTelemetry() {
   if ('VehicleSpeed' in state) setText('vc-speed', state.VehicleSpeed > 0 ? state.VehicleSpeed.toFixed(0) + ' mph' : 'Parked');
   if (state.Location && state.Location.latitude) {
     setHtml('vc-loc', `<a href="https://maps.google.com/?q=${state.Location.latitude},${state.Location.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a>`);
+  }
+  // Charging widget lives inside the header (full-render only), so when any
+  // charge-relevant field moves, re-run the full render with the cached state.
+  // This makes the widget appear the moment charging starts, tick down as
+  // TimeToFullCharge updates, and vanish when charging stops. Cheap: the full
+  // render is a single innerHTML assignment on one card.
+  if ('DetailedChargeState' in state || 'ChargeAmps' in state || 'ChargerVoltage' in state ||
+      'TimeToFullCharge' in state || 'ChargeLimitSoc' in state) {
+    renderVehicleCardFromTelemetry(state);
   }
 }
 
@@ -1724,6 +1733,35 @@ function renderVehicleCardFromTelemetry(t) {
   const loc = (t.Location && t.Location.latitude)
     ? `<a href="https://maps.google.com/?q=${t.Location.latitude},${t.Location.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a>`
     : '—';
+  // Charging widget (header, right side): renders only while actively charging.
+  // All values come from the live telemetry cache, so this updates in real time.
+  //   ⚡ power = ChargeAmps × ChargerVoltage (AC path; DC fast charging shows a
+  //     plain label when pin-level amps aren't meaningful)
+  //   ⏱ TimeToFullCharge streams in HOURS (decimal) — 0.25 = 15 min
+  //   🏁 finish = now + remaining, local clock time
+  let chargeWidget = '';
+  if (chargeState === 'Charging') {
+    const amps = (typeof t.ChargeAmps === 'number') ? t.ChargeAmps : 0;
+    const volts = (typeof t.ChargerVoltage === 'number') ? t.ChargerVoltage : 0;
+    const kw = amps > 0 && volts > 0 ? (amps * volts / 1000) : 0;
+    const powerLine = kw > 0
+      ? `⚡ ${kw.toFixed(1)} kW <span style="color:var(--hint);">(${Math.round(amps)}A @ ${Math.round(volts)}V)</span>`
+      : (t.FastChargerPresent === true ? '⚡ DC fast charging' : '⚡ Charging');
+    let remainLine = '', finishLine = '';
+    if (typeof t.TimeToFullCharge === 'number' && t.TimeToFullCharge > 0) {
+      const mins = Math.round(t.TimeToFullCharge * 60);
+      remainLine = `⏱ ${mins >= 60 ? Math.floor(mins/60) + 'h ' + (mins%60) + 'm' : mins + ' min'} remaining`;
+      const fin = new Date(Date.now() + mins * 60000);
+      finishLine = `🏁 done ~${fin.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}`;
+    }
+    const target = t.ChargeLimitSoc ? `🎯 to ${Math.round(t.ChargeLimitSoc)}%` : '';
+    chargeWidget = `
+      <div style="margin-left:auto;text-align:right;font-size:12.5px;line-height:1.75;background:var(--green-bg);border-radius:10px;padding:8px 14px;">
+        <div style="font-weight:600;">${powerLine}</div>
+        ${remainLine ? `<div>${remainLine}</div>` : ''}
+        ${finishLine ? `<div>${finishLine} ${target}</div>` : (target ? `<div>${target}</div>` : '')}
+      </div>`;
+  }
   el.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border);">
       <div style="width:60px;height:40px;display:flex;align-items:center;justify-content:center;">${vehicleImg(S.vehicles.find(x => x.id === S.vehicleId) || {vin: S.vehicleVin})}</div>
@@ -1731,9 +1769,10 @@ function renderVehicleCardFromTelemetry(t) {
         <div style="font-size:17px;font-weight:600;">${S.vehicleName}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:2px;"><span class="dot-on"></span>live · ${locked?'Locked':'⚠ Unlocked'} · VIN: ${S.vehicleVin}</div>
       </div>
+      ${chargeWidget}
     </div>
     <div class="card-title">Battery</div>
-    <div style="font-size:24px;font-weight:600;"><span id="vc-batt">${batt}</span>% <span style="font-size:14px;font-weight:400;color:var(--muted);"><span id="vc-range">${t.EstBatteryRange?Math.round(t.EstBatteryRange):'—'}</span> mi range</span></div>
+    <div style="font-size:24px;font-weight:600;"><span id="vc-batt">${batt}</span>% <span style="font-size:14px;font-weight:400;color:var(--muted);"><span id="vc-range">${t.RatedRange?Math.round(t.RatedRange):'—'}</span> mi range</span></div>
     <div class="battery-track"><div id="vc-battfill" class="battery-fill ${bc}" style="width:${batt}%"></div></div>
     <div class="batt-labels"><span>0%</span><span>Charge limit: <span id="vc-limit">${t.ChargeLimitSoc?Math.round(t.ChargeLimitSoc):'—'}</span>%</span><span>100%</span></div>
     <div style="margin-top:16px;" class="card-title">Details</div>
