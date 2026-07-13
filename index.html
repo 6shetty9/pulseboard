@@ -728,6 +728,20 @@ input:checked + .slider:before { transform: translateX(20px); }
         </div>
       </div>
       <div class="card">
+        <div class="card-title">Bridge connection</div>
+        <div class="row" style="align-items:center;">
+          <span class="row-label">Bridge secret</span>
+          <span class="row-val" style="display:flex; align-items:center; gap:6px;">
+            <input id="bridgeSecretInput" type="password" placeholder="paste secret" autocomplete="off" autocapitalize="off" spellcheck="false" style="width:200px; padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;" />
+            <button onclick="saveBridgeSecret()" style="padding:5px 12px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; cursor:pointer;">Save</button>
+          </span>
+        </div>
+        <div id="bridgeSecretStatus" style="font-size:11px; color:var(--hint); margin-top:8px; line-height:1.5;"></div>
+        <div style="font-size:11px; color:var(--hint); margin-top:4px; line-height:1.5;">
+          The shared secret that authenticates this browser to the ws-bridge (live telemetry, commands, admin). Stored only in this device's local storage. Each device/app install needs it entered once — including the home-screen app on iPad, which has storage separate from Safari.
+        </div>
+      </div>
+      <div class="card">
         <div class="card-title">Alert thresholds</div>
         <div class="row"><span class="row-label">Sentry turns off unexpectedly</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
         <div class="row"><span class="row-label">Sentry camera event</span><span class="row-val"><span class="pill pill-live">Alert</span></span></div>
@@ -849,6 +863,31 @@ function saveKwhRate(val) {
   S.kwhRate = (isNaN(rate) || rate <= 0) ? null : rate;
   save();
   loadDriveSessions();  // refresh costs
+}
+
+// Bridge secret (Settings → Bridge connection). Everything that talks to the
+// bridge reads localStorage.pb_proxy_secret — historically set only via
+// DevTools, which was a dead end on iPad/PWA installs. Saving reloads the
+// page so the WSS connection, token flow, and admin fetches all pick up the
+// new value from a clean start.
+function saveBridgeSecret() {
+  const el = document.getElementById('bridgeSecretInput');
+  const val = (el && el.value || '').trim();
+  if (!val) return;
+  localStorage.setItem('pb_proxy_secret', val);
+  if (el) el.value = '';
+  updateBridgeSecretStatus('Saved — reloading to connect…');
+  setTimeout(() => location.reload(), 600);
+}
+
+function updateBridgeSecretStatus(msg) {
+  const st = document.getElementById('bridgeSecretStatus');
+  if (!st) return;
+  if (msg) { st.textContent = msg; return; }
+  const cur = localStorage.getItem('pb_proxy_secret');
+  st.innerHTML = cur
+    ? `<span style="color:var(--green-text);">●</span> Secret set on this device (${cur.length} chars). Enter a new value to replace it.`
+    : `<span style="color:var(--red-text);">●</span> No secret on this device — live telemetry and commands won't work until one is saved.`;
 }
 
 function load() {
@@ -1621,6 +1660,7 @@ function showTab(name, el) {
   if (name === 'settings') {
     const ri = document.getElementById('kwhRateInput');
     if (ri && S.kwhRate) ri.value = S.kwhRate;
+    updateBridgeSecretStatus();
     loadOutOfParkAlert();
     loadAlertPrefs();
   }
