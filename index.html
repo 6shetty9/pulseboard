@@ -738,7 +738,7 @@ input:checked + .slider:before { transform: translateX(20px); }
         </div>
         <div id="bridgeSecretStatus" style="font-size:11px; color:var(--hint); margin-top:8px; line-height:1.5;"></div>
         <div style="font-size:11px; color:var(--hint); margin-top:4px; line-height:1.5;">
-          The shared secret that authenticates this browser to the ws-bridge (live telemetry, commands, admin). Stored only in this device's local storage. Each device/app install needs it entered once — including the home-screen app on iPad, which has storage separate from Safari.
+          The shared secret that authenticates this browser to the ws-bridge (live telemetry, commands, admin). Must match the secret configured on the bridge itself — saving here does <b>not</b> change the bridge's secret, only what this device sends (rotating the real secret is a droplet-side edit to the ws-bridge service). Stored only in this device's local storage; each device/app install needs it entered once — including the home-screen app on iPad, which has storage separate from Safari.
         </div>
       </div>
       <div class="card">
