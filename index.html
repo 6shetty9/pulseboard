@@ -450,6 +450,21 @@ input:checked + .slider:before { transform: translateX(20px); }
           </div>
           <div id="driveSummary" style="display:none; margin-bottom: 12px;"></div>
           <div id="driveMap" style="display:none; height: 280px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
+          <div id="driveChartsRow" style="display:none; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+            <div style="flex:1; min-width:220px;">
+              <div style="font-size:11px; color:var(--text-soft); margin-bottom:4px;">Speed (mph) <span id="driveBandLegend" style="float:right; font-size:10px;"></span></div>
+              <div style="height:150px; position:relative;"><canvas id="driveSpeedChart"></canvas></div>
+            </div>
+            <div id="drivePowerWrap" style="flex:1; min-width:220px;">
+              <div style="font-size:11px; color:var(--text-soft); margin-bottom:4px;">Power (kW) <span style="float:right; font-size:10px;">regen below 0</span></div>
+              <div style="height:150px; position:relative;"><canvas id="drivePowerChart"></canvas></div>
+            </div>
+            <div style="flex:1; min-width:220px;">
+              <div style="font-size:11px; color:var(--text-soft); margin-bottom:4px;">Battery (%)</div>
+              <div style="height:150px; position:relative;"><canvas id="driveBattChart"></canvas></div>
+            </div>
+            <div id="driveScrubHint" style="flex-basis:100%; font-size:10px; color:var(--hint);">Move your pointer across a chart, or drag the dot on the map — all views stay in sync.</div>
+          </div>
           <div id="driveSessions"><div class="empty">Loading…</div></div>
         </div>
       </div>
@@ -1610,6 +1625,11 @@ let chargeChart = null;
 let driveMap = null;
 let driveRouteLayer = null;
 let driveSessionsCache = [];
+// Drive-detail charts (speed/power/battery under the route map) + scrubber.
+let driveDetailCharts = [];   // Chart.js instances, destroyed on every reload
+let driveSeries = null;       // last /drives/series payload
+let driveScrubTs = null;      // shared crosshair timestamp (unix s)
+let driveScrubMarker = null;  // draggable Leaflet marker synced to the charts
 let driveRangeDays = 7; // 0 = all time
 const DRIVE_RANGE_LABELS = { 1: '24h', 7: '7-day', 30: '30-day', 60: '60-day', 90: '90-day', 365: '1-year', 0: 'All-time' };
 let batteryChart = null;
@@ -2974,6 +2994,7 @@ async function loadDriveSessions() {
 
   // Clear any previously displayed route/map
   document.getElementById('driveMap').style.display = 'none';
+  hideDriveCharts();
   if (driveRouteLayer && driveMap) {
     driveMap.removeLayer(driveRouteLayer);
     driveRouteLayer = null;
@@ -3040,6 +3061,7 @@ async function loadDriveSessions() {
       el.innerHTML = `<div class="empty">No drives in the ${rangeLabel.toLowerCase()} period.${allSessions.length ? ' Try a wider range.' : ' Take the car for a spin and they\'ll show up here.'}</div>`;
       document.getElementById('driveSummary').style.display = 'none';
       document.getElementById('driveMap').style.display = 'none';
+      hideDriveCharts();
       driveSessionsCache = [];
       return;
     }
@@ -3249,10 +3271,230 @@ async function showDriveRoute(idx) {
     // Fit bounds with a little padding
     driveMap.fitBounds(L.latLngBounds(latlngs), { padding: [20, 20] });
     setTimeout(() => { driveMap.invalidateSize(); mapEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 100);
+
+    // Drive-detail charts under the map (speed / power / battery + scrubber)
+    loadDriveSeries(s);
   } catch(e) {
     console.log('drive route load failed:', e);
     mapEl.style.display = 'none';
+    hideDriveCharts();
     console.log('Could not load route:', e);
+  }
+}
+
+// ---- Drive detail charts (speed / power / battery + map scrubber) ----
+//
+// Data: /drives/series (bridge). Rendered as three small Chart.js line
+// charts under the route map. A shared crosshair timestamp (driveScrubTs)
+// is drawn on all three; moving the pointer over any chart, or dragging
+// the red dot along the route, keeps charts and map in sync.
+//
+// Shading on the speed chart:
+//   blue  = cruise/Autopilot holding speed (CruiseSetSpeed > 0)
+//   green = FSD accruing miles (SelfDrivingMilesSinceReset ticked up).
+//     Tick resolution is ~1 mile (Tesla-enforced minimum_delta), so green
+//     band edges are soft by design.
+// Power exists only for drives after the Jul 15 2026 config push; the
+// power chart hides itself for older drives.
+
+const driveCrosshairPlugin = {
+  id: 'driveCrosshair',
+  afterDraw(chart) {
+    if (!chart.canvas.id.startsWith('drive')) return;
+    if (driveScrubTs == null) return;
+    const x = chart.scales.x.getPixelForValue(driveScrubTs);
+    const a = chart.chartArea;
+    if (!isFinite(x) || x < a.left || x > a.right) return;
+    const ctx = chart.ctx;
+    ctx.save(); ctx.beginPath();
+    ctx.moveTo(x, a.top); ctx.lineTo(x, a.bottom);
+    ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(226,75,74,0.9)';
+    ctx.stroke(); ctx.restore();
+  }
+};
+const driveBandsPlugin = {
+  id: 'driveBands',
+  beforeDatasetsDraw(chart) {
+    const cfg = chart.options.plugins && chart.options.plugins.driveBands;
+    if (!cfg || !cfg.bands || !cfg.bands.length) return;
+    const ctx = chart.ctx, a = chart.chartArea, xs = chart.scales.x;
+    ctx.save();
+    for (const b of cfg.bands) {
+      let x1 = Math.max(xs.getPixelForValue(b.t0), a.left);
+      let x2 = Math.min(xs.getPixelForValue(b.t1), a.right);
+      if (x2 <= x1) continue;
+      ctx.fillStyle = b.color;
+      ctx.fillRect(x1, a.top, x2 - x1, a.bottom - a.top);
+    }
+    ctx.restore();
+  }
+};
+Chart.register(driveCrosshairPlugin, driveBandsPlugin);
+
+function hideDriveCharts() {
+  const row = document.getElementById('driveChartsRow');
+  if (row) row.style.display = 'none';
+  for (const c of driveDetailCharts) { try { c.destroy(); } catch(e){} }
+  driveDetailCharts = [];
+  if (driveScrubMarker && driveMap) { try { driveMap.removeLayer(driveScrubMarker); } catch(e){} }
+  driveScrubMarker = null;
+  driveScrubTs = null;
+  driveSeries = null;
+}
+
+async function loadDriveSeries(s) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const vin = s._vin || S.vehicleVin;
+  if (!secret || !vin) { console.warn('driveSeries: secret or vin missing'); return; }
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/drives/series?vin=${vin}&start_ts=${s.start_ts}&secret=${secret}`);
+    if (!r.ok) throw new Error('http ' + r.status);
+    driveSeries = await r.json();
+    renderDriveCharts();
+  } catch(e) {
+    console.warn('driveSeries load failed:', e);
+    hideDriveCharts();
+  }
+}
+
+// Binary search: nearest [ts,...] tuple in a sorted series.
+function nearestByTs(arr, ts) {
+  if (!arr || !arr.length) return null;
+  let lo = 0, hi = arr.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid][0] < ts) lo = mid; else hi = mid;
+  }
+  return (Math.abs(arr[lo][0] - ts) <= Math.abs(arr[hi][0] - ts)) ? arr[lo] : arr[hi];
+}
+
+function renderDriveCharts() {
+  const d = driveSeries;
+  if (!d || !d.series) return;
+  const row = document.getElementById('driveChartsRow');
+  row.style.display = 'flex';
+
+  // Reset previous instances + marker
+  for (const c of driveDetailCharts) { try { c.destroy(); } catch(e){} }
+  driveDetailCharts = [];
+  if (driveScrubMarker && driveMap) { try { driveMap.removeLayer(driveScrubMarker); } catch(e){} }
+  driveScrubMarker = null;
+  driveScrubTs = null;
+
+  const t0 = d.drive.start_ts, t1 = d.drive.end_ts;
+  const S2 = d.series;
+
+  // Power sign: Tesla's PackCurrent convention isn't documented; normalize
+  // empirically so driving shows positive kW and regen negative. If the
+  // average power while moving (>10 mph) comes out negative, flip the series.
+  let power = S2.power || [];
+  if (power.length && S2.speed && S2.speed.length) {
+    let sum = 0, n = 0;
+    for (const p of power) {
+      const sp = nearestByTs(S2.speed, p[0]);
+      if (sp && sp[1] > 10) { sum += p[1]; n++; }
+    }
+    if (n >= 5 && sum / n < 0) power = power.map(p => [p[0], -p[1]]);
+  }
+  document.getElementById('drivePowerWrap').style.display = power.length ? '' : 'none';
+
+  // Shading bands for the speed chart
+  const bands = [];
+  const cruise = S2.cruise || [];
+  let runStart = null;
+  for (let i = 0; i < cruise.length; i++) {
+    const engaged = cruise[i][1] > 0;
+    if (engaged && runStart == null) runStart = cruise[i][0];
+    if (!engaged && runStart != null) { bands.push({ t0: runStart, t1: cruise[i][0], color: 'rgba(59,130,246,0.10)' }); runStart = null; }
+  }
+  if (runStart != null) bands.push({ t0: runStart, t1: t1, color: 'rgba(59,130,246,0.10)' });
+  const ticks = (d.fsd && d.fsd.ticks) || [];
+  for (let i = 1; i < ticks.length; i++) {
+    if (ticks[i][1] > ticks[i-1][1]) bands.push({ t0: ticks[i-1][0], t1: ticks[i][0], color: 'rgba(22,163,74,0.16)' });
+  }
+  const legend = document.getElementById('driveBandLegend');
+  if (legend) {
+    const parts = [];
+    if (cruise.some(c => c[1] > 0)) parts.push('<span style="background:rgba(59,130,246,0.25); padding:0 6px; border-radius:3px;">cruise</span>');
+    if (ticks.length >= 2) parts.push('<span style="background:rgba(22,163,74,0.30); padding:0 6px; border-radius:3px;">FSD</span>');
+    if (d.fsd && d.fsd.pct != null) parts.push(`${Math.round(d.fsd.pct * 100)}% FSD`);
+    legend.innerHTML = parts.join(' ');
+  }
+
+  const toXY = arr => arr.map(p => ({ x: p[0], y: p[1] }));
+  const fmtT = v => new Date(v * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const baseOpts = (extra) => ({
+    responsive: true, maintainAspectRatio: false, animation: false,
+    events: [], // chart.js's own hover/click handling off; we scrub via raw canvas listeners
+    plugins: Object.assign({ legend: { display: false }, tooltip: { enabled: false } }, extra || {}),
+    scales: {
+      x: { type: 'linear', min: t0, max: t1,
+           ticks: { maxTicksLimit: 5, callback: fmtT, font: { size: 10 } }, grid: { display: false } },
+      y: { ticks: { maxTicksLimit: 5, font: { size: 10 } } }
+    }
+  });
+  const mkChart = (canvasId, data, color, extraPlugins, yOpts) => {
+    const ctx = document.getElementById(canvasId).getContext('2d');
+    const opts = baseOpts(extraPlugins);
+    if (yOpts) Object.assign(opts.scales.y, yOpts);
+    const ch = new Chart(ctx, {
+      type: 'line',
+      data: { datasets: [{ data: toXY(data), borderColor: color, borderWidth: 1.8, pointRadius: 0, tension: 0.25, fill: false }] },
+      options: opts
+    });
+    // Pointer scrubbing (mouse + touch)
+    const scrubFromEvent = (ev) => {
+      const rect = ch.canvas.getBoundingClientRect();
+      const cx = (ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left;
+      let ts = ch.scales.x.getValueForPixel(cx);
+      if (!isFinite(ts)) return;
+      setDriveScrub(Math.max(t0, Math.min(t1, ts)));
+      if (ev.touches) ev.preventDefault();
+    };
+    ch.canvas.addEventListener('mousemove', scrubFromEvent);
+    ch.canvas.addEventListener('touchmove', scrubFromEvent, { passive: false });
+    driveDetailCharts.push(ch);
+    return ch;
+  };
+
+  mkChart('driveSpeedChart', S2.speed || [], '#3b82f6', { driveBands: { bands } }, { beginAtZero: true });
+  if (power.length) mkChart('drivePowerChart', power, '#16a34a', null, {});
+  mkChart('driveBattChart', S2.soc || [], '#f59e0b', null, {});
+}
+
+function setDriveScrub(ts) {
+  driveScrubTs = ts;
+  for (const c of driveDetailCharts) c.draw();
+  const path = driveSeries && driveSeries.series && driveSeries.series.path;
+  if (!path || !path.length || !driveMap) return;
+  const p = nearestByTs(path, ts);
+  if (!p) return;
+  if (!driveScrubMarker) {
+    const dot = L.divIcon({
+      className: 'route-pin',
+      html: '<div style="width:16px;height:16px;border-radius:50%;background:#E24B4A;border:3px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.5);cursor:grab;"></div>',
+      iconSize: [16, 16], iconAnchor: [8, 8]
+    });
+    driveScrubMarker = L.marker([p[1], p[2]], { draggable: true, icon: dot, zIndexOffset: 1000 }).addTo(driveMap);
+    driveScrubMarker.on('drag', (e) => {
+      // Snap the drag to the nearest route point; sync charts to its time.
+      const ll = e.target.getLatLng();
+      let best = null, bestD = Infinity;
+      for (const q of path) {
+        const dd = (q[1] - ll.lat) * (q[1] - ll.lat) + (q[2] - ll.lng) * (q[2] - ll.lng);
+        if (dd < bestD) { bestD = dd; best = q; }
+      }
+      if (best) {
+        driveScrubTs = best[0];
+        for (const c of driveDetailCharts) c.draw();
+      }
+    });
+    driveScrubMarker.on('dragend', () => {
+      const p2 = nearestByTs(path, driveScrubTs);
+      if (p2) driveScrubMarker.setLatLng([p2[1], p2[2]]);
+    });
+  } else {
+    driveScrubMarker.setLatLng([p[1], p[2]]);
   }
 }
 
