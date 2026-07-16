@@ -449,6 +449,7 @@ input:checked + .slider:before { transform: translateX(20px); }
             <button class="chip" onclick="setDriveRange(0,this)">All</button>
           </div>
           <div id="driveSummary" style="display:none; margin-bottom: 12px;"></div>
+          <div id="driveRouteTitle" style="display:none; font-size:13px; font-weight:600; padding:8px 12px; margin-bottom:8px; background:var(--bg); border-radius:8px;"></div>
           <div id="driveMap" style="display:none; height: 280px; border-radius: var(--radius-sm); margin-bottom: 12px; border: 1px solid var(--border);"></div>
           <div id="driveChartsRow" style="display:none; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
             <div style="flex:1; min-width:220px;">
@@ -463,7 +464,7 @@ input:checked + .slider:before { transform: translateX(20px); }
               <div style="font-size:11px; color:var(--text-soft); margin-bottom:4px;">Battery (%)</div>
               <div style="height:150px; position:relative;"><canvas id="driveBattChart"></canvas></div>
             </div>
-            <div id="driveScrubHint" style="flex-basis:100%; font-size:10px; color:var(--hint);">Move your pointer across a chart, or drag the dot on the map — all views stay in sync.</div>
+            <div id="driveScrubHint" style="flex-basis:100%; font-size:10px; color:var(--hint);">Move your pointer across a chart, or drag the blue dot on the map — all views stay in sync.</div>
           </div>
           <div id="driveSessions"><div class="empty">Loading…</div></div>
         </div>
@@ -3217,6 +3218,14 @@ async function showDriveRoute(idx) {
   if (!secret || !vin) return;
   const mapEl = document.getElementById('driveMap');
   mapEl.style.display = 'block';
+  // Banner: which drive is on the map/charts right now
+  const titleEl = document.getElementById('driveRouteTitle');
+  if (titleEl) {
+    const when = new Date(s.start_ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const from = s.start_place || 'Unknown', to = s.end_place || 'Unknown';
+    titleEl.textContent = `🗺 ${from} → ${to} · ${when}`;
+    titleEl.style.display = 'block';
+  }
 
   // Init map on first use
   if (!driveMap) {
@@ -3308,7 +3317,7 @@ const driveCrosshairPlugin = {
     const ctx = chart.ctx;
     ctx.save(); ctx.beginPath();
     ctx.moveTo(x, a.top); ctx.lineTo(x, a.bottom);
-    ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(226,75,74,0.9)';
+    ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(37,99,235,0.9)';
     ctx.stroke(); ctx.restore();
   }
 };
@@ -3334,6 +3343,8 @@ Chart.register(driveCrosshairPlugin, driveBandsPlugin);
 function hideDriveCharts() {
   const row = document.getElementById('driveChartsRow');
   if (row) row.style.display = 'none';
+  const titleEl = document.getElementById('driveRouteTitle');
+  if (titleEl) titleEl.style.display = 'none';
   for (const c of driveDetailCharts) { try { c.destroy(); } catch(e){} }
   driveDetailCharts = [];
   if (driveScrubMarker && driveMap) { try { driveMap.removeLayer(driveScrubMarker); } catch(e){} }
@@ -3472,7 +3483,7 @@ function setDriveScrub(ts) {
   if (!driveScrubMarker) {
     const dot = L.divIcon({
       className: 'route-pin',
-      html: '<div style="width:16px;height:16px;border-radius:50%;background:#E24B4A;border:3px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.5);cursor:grab;"></div>',
+      html: '<div style="width:16px;height:16px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.5);cursor:grab;"></div>',
       iconSize: [16, 16], iconAnchor: [8, 8]
     });
     driveScrubMarker = L.marker([p[1], p[2]], { draggable: true, icon: dot, zIndexOffset: 1000 }).addTo(driveMap);
