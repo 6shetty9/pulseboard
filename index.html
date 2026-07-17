@@ -224,6 +224,7 @@ input:checked + .slider:before { transform: translateX(20px); }
     </div>
 
     <div id="tab-monitor" style="display:none;">
+      <div id="vehCtx-monitor" style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;"></div>
       <div class="grid4">
         <div class="stat"><div class="stat-label">Sentry mode</div><div class="stat-val" id="sentryState">—</div><div class="stat-sub" id="sentryStateSub">—</div></div>
         <div class="stat"><div class="stat-label">Events today</div><div class="stat-val" id="eventCount">0</div><div class="stat-sub" id="lastEventTime">No events yet</div></div>
@@ -266,6 +267,7 @@ input:checked + .slider:before { transform: translateX(20px); }
     </div>
 
     <div id="tab-charge" style="display:none;">
+      <div id="vehCtx-charge" style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;"></div>
       <div class="card">
         <div class="card-title">⚡ Charging controls</div>
         <div style="margin-bottom: 14px;">
@@ -303,6 +305,7 @@ input:checked + .slider:before { transform: translateX(20px); }
     </div>
 
     <div id="tab-battery" style="display:none;">
+      <div id="vehCtx-battery" style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;"></div>
       <div class="card">
         <div class="card-title">🔋 Battery health</div>
         <div id="batterySummary" style="display:none; margin-bottom: 16px;"></div>
@@ -495,6 +498,7 @@ input:checked + .slider:before { transform: translateX(20px); }
     </div>
 
     <div id="tab-geofences" style="display:none;">
+      <div id="vehCtx-geofences" style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;"></div>
       <div class="card">
         <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
           <span>📍 Geofences</span>
@@ -572,6 +576,7 @@ input:checked + .slider:before { transform: translateX(20px); }
     </div>
 
     <div id="tab-schedules" style="display:none;">
+      <div id="vehCtx-schedules" style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;"></div>
       <div class="card">
         <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
           <span>⏰ Schedules</span>
@@ -1665,6 +1670,7 @@ function showTab(name, el) {
   });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
+  renderVehicleContext();
   if (name === 'vehicle') { renderPicker(); loadVehicleCard(); }
   if (name === 'charge') { syncChargeSliders(); loadChargeChart(); }
   if (name === 'battery') { loadBatteryHealth(); }
@@ -1735,6 +1741,31 @@ function switchVehicle(id) {
   loadSchedules();
   updateLiveDisplay();
   refreshPauseState();  // Pause is per-VIN; flip button to match new vehicle.
+  renderVehicleContext();
+}
+
+// Vehicle-context pills at the top of per-vehicle tabs (Sentry monitor,
+// Charge, Battery, Geofences, Schedules). These tabs always render for the
+// currently selected vehicle but historically gave no indication which one —
+// the pills show it and allow switching in place, mirroring the Analytics
+// car toggle (same chip/chip-active classes).
+function renderVehicleContext() {
+  if (!S.vehicles || !S.vehicles.length) return;
+  const html = S.vehicles.map(v => {
+    const active = v.id === S.vehicleId;
+    return `<button class="chip ${active ? 'chip-active' : ''}" onclick="vehCtxSwitch('${v.id}')">${(v.name || v.vin).replace('Tesla ', '')}</button>`;
+  }).join('');
+  for (const id of ['vehCtx-monitor','vehCtx-charge','vehCtx-battery','vehCtx-geofences','vehCtx-schedules']) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  }
+}
+function vehCtxSwitch(id) {
+  if (id === S.vehicleId) return;
+  switchVehicle(id);
+  // switchVehicle refreshes battery/zones/schedules/live; the Charge tab has
+  // its own loaders that it doesn't cover — refresh them if we're on it.
+  if (document.getElementById('tab-charge').style.display !== 'none') { syncChargeSliders(); loadChargeChart(); }
 }
 
 async function loadVehicleCard() {
