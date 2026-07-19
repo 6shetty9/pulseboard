@@ -4649,13 +4649,35 @@ async function loadCharging() {
   const totKWh = all.reduce((a,s) => a + (s.energy_kwh||0), 0);
   const totCost = all.reduce((a,s) => a + (s.cost||0), 0);
   const homeCount = all.filter(s => s.is_home).length;
+  const acKWh = all.filter(s => s.is_dc === 0).reduce((a,s) => a + (s.energy_kwh||0), 0);
+  const dcKWh = all.filter(s => s.is_dc === 1).reduce((a,s) => a + (s.energy_kwh||0), 0);
+  const splitKWh = acKWh + dcKWh; // sessions with a known AC/DC verdict
+  const dcPct = splitKWh > 0 ? (dcKWh/splitKWh*100) : 0;
+
+  // Drive miles over the same range (Ø cost / 100 mi denominator).
+  let driveMiles = 0;
+  try {
+    const dr = await Promise.all(vins.map(v => fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${v}&limit=2000`).then(r => r.json()).catch(() => ({}))));
+    dr.forEach(d => (d.sessions||[]).forEach(s => { if (s.start_ts >= cutoff && (s.distance_mi||0) > 0) driveMiles += s.distance_mi; }));
+  } catch(e) {}
+  const cost100 = driveMiles > 0 ? (totCost/driveMiles*100) : null;
+
   sumEl.style.display = 'grid';
-  sumEl.style.gridTemplateColumns = 'repeat(3, 1fr)';
+  sumEl.style.gridTemplateColumns = 'repeat(auto-fit, minmax(150px, 1fr))';
   sumEl.style.gap = '10px';
   sumEl.innerHTML = `
     <div class="stat"><div class="stat-label">Total energy</div><div class="stat-val">${totKWh.toFixed(1)}</div><div class="stat-sub">kWh · ${all.length} session${all.length===1?'':'s'}</div></div>
     <div class="stat"><div class="stat-label">Total cost</div><div class="stat-val">$${totCost.toFixed(2)}</div><div class="stat-sub">${homeCount} home · ${all.length-homeCount} away</div></div>
-    <div class="stat"><div class="stat-label">Avg cost/kWh</div><div class="stat-val">$${totKWh>0 ? (totCost/totKWh).toFixed(2) : '0.00'}</div><div class="stat-sub">blended</div></div>`;
+    <div class="stat"><div class="stat-label">Avg cost/kWh</div><div class="stat-val">$${totKWh>0 ? (totCost/totKWh).toFixed(2) : '0.00'}</div><div class="stat-sub">blended</div></div>
+    <div class="stat"><div class="stat-label">Ø cost / 100 mi</div><div class="stat-val">${cost100 != null ? '$'+cost100.toFixed(2) : '—'}</div><div class="stat-sub">${driveMiles > 0 ? Math.round(driveMiles).toLocaleString()+' mi driven' : 'no drives in range'}</div></div>
+    <div class="stat" style="display:flex; align-items:center; gap:10px;">
+      <div style="width:46px; height:46px; border-radius:50%; flex-shrink:0; background:conic-gradient(#f59f00 0 ${dcPct.toFixed(1)}%, #2f9e44 ${dcPct.toFixed(1)}% 100%);" title="AC vs DC energy"></div>
+      <div>
+        <div class="stat-label">AC / DC energy</div>
+        <div style="font-size:12px; color:var(--text);"><span style="color:#2f9e44;">●</span> AC ${acKWh.toFixed(1)} kWh${splitKWh>0 ? ' · '+(100-dcPct).toFixed(0)+'%' : ''}</div>
+        <div style="font-size:12px; color:var(--text);"><span style="color:#f59f00;">●</span> DC ${dcKWh.toFixed(1)} kWh${splitKWh>0 ? ' · '+dcPct.toFixed(0)+'%' : ''}</div>
+      </div>
+    </div>`;
 
   const sessLbl = document.getElementById('chargeSessionsLabel');
   if (sessLbl) sessLbl.textContent = `Sessions (${all.length})`;
