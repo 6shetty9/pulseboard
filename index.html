@@ -411,6 +411,7 @@ input:checked + .slider:before { transform: translateX(20px); }
               <div style="display:flex; align-items:center; gap:4px;">$<input id="rateAway" type="number" min="0" max="5" step="0.01" onchange="saveChargeRates()" style="width:72px; padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px; text-align:right;" /> /kWh</div>
             </div>
             <button onclick="recalcChargeCosts(this)" style="font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">↻ Recalculate history</button>
+            <button id="undoRecalcBtn" onclick="undoRecalcChargeCosts(this)" style="display:none; font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer;">↩ Undo recalc</button>
           </div>
           <div style="font-size:11px; color:var(--text-soft); margin-bottom:14px;">Past costs stay frozen at the rate when charged. Use “Recalculate” to re-apply current rates to all history.</div>
           <div id="chargeSummary" style="display:none; margin-bottom:14px;"></div>
@@ -4368,16 +4369,47 @@ async function saveChargeRates() {
   } catch(e) { console.log('save rates failed', e); }
 }
 
+// Recalculate history is destructive (overwrites every session's rate_used/cost
+// with the current rates). Two-step confirm: first click arms for 5s, second
+// click fires. After a recalc the bridge holds a one-shot snapshot; the Undo
+// button (hidden until then) restores it via /charging/recalculate?undo=true.
+let recalcArmTimer = null;
 async function recalcChargeCosts(btn) {
   const secret = localStorage.getItem('pb_proxy_secret');
-  const orig = btn.textContent;
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = '1';
+    btn.textContent = '⚠ Overwrite all costs?';
+    btn.style.borderColor = '#e5484d'; btn.style.color = '#e5484d';
+    recalcArmTimer = setTimeout(() => disarmRecalc(btn), 5000);
+    return;
+  }
+  clearTimeout(recalcArmTimer); disarmRecalc(btn);
   btn.textContent = '↻ Recalculating…'; btn.disabled = true;
   try {
     await saveChargeRates(); // ensure latest rates are persisted first
     await fetch(`${BRIDGE_BASE}/charging/recalculate?secret=${secret}`, { method: 'POST' });
     await loadCharging();
+    const u = document.getElementById('undoRecalcBtn'); if (u) u.style.display = '';
   } catch(e) { console.log('recalc failed', e); }
-  btn.textContent = orig; btn.disabled = false;
+  btn.textContent = '↻ Recalculate history'; btn.disabled = false;
+}
+function disarmRecalc(btn) {
+  delete btn.dataset.armed;
+  btn.textContent = '↻ Recalculate history';
+  btn.style.borderColor = ''; btn.style.color = '';
+}
+async function undoRecalcChargeCosts(btn) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  btn.textContent = '↩ Restoring…'; btn.disabled = true;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/charging/recalculate?secret=${secret}&undo=true`, { method: 'POST' });
+    const j = await r.json();
+    await loadCharging();
+    btn.textContent = `↩ Restored ${j.restored ?? 0} sessions`;
+    setTimeout(() => { btn.style.display = 'none'; btn.textContent = '↩ Undo recalc'; btn.disabled = false; }, 2500);
+    return;
+  } catch(e) { console.log('undo failed', e); }
+  btn.textContent = '↩ Undo recalc'; btn.disabled = false;
 }
 
 // ---- Battery degradation (Phase 5, Jun 4 2026) -----------------------------
