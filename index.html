@@ -415,6 +415,7 @@ input:checked + .slider:before { transform: translateX(20px); }
           </div>
           <div style="font-size:11px; color:var(--text-soft); margin-bottom:14px;">Past costs stay frozen at the rate when charged. Use “Recalculate” to re-apply current rates to all history.</div>
           <div id="chargeSummary" style="display:none; margin-bottom:14px;"></div>
+          <div id="chargeMonthlyStats" style="display:none; margin-bottom:14px;"></div>
           <div id="chargeSessionsToggle" onclick="toggleChargeSessions()" style="display:none; align-items:center; gap:6px; cursor:pointer; font-size:12px; font-weight:600; color:var(--text-soft); margin-bottom:8px; user-select:none;"><span id="chargeSessionsCaret">▸</span><span id="chargeSessionsLabel">Sessions</span></div>
           <div id="chargeCostSessions"><div class="empty">Loading…</div></div>
         </div>
@@ -4642,6 +4643,7 @@ async function loadCharging() {
     listEl.innerHTML = '<div class="empty">No charging sessions in this period.</div>';
     sumEl.style.display = 'none';
     const tg0 = document.getElementById('chargeSessionsToggle'); if (tg0) tg0.style.display = 'none';
+    const mEl0 = document.getElementById('chargeMonthlyStats'); if (mEl0) mEl0.style.display = 'none';
     return;
   }
 
@@ -4656,9 +4658,10 @@ async function loadCharging() {
 
   // Drive miles over the same range (Ø cost / 100 mi denominator).
   let driveMiles = 0;
+  const driveAll = [];
   try {
     const dr = await Promise.all(vins.map(v => fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${v}&limit=2000`).then(r => r.json()).catch(() => ({}))));
-    dr.forEach(d => (d.sessions||[]).forEach(s => { if (s.start_ts >= cutoff && (s.distance_mi||0) > 0) driveMiles += s.distance_mi; }));
+    dr.forEach(d => (d.sessions||[]).forEach(s => { if (s.start_ts >= cutoff && (s.distance_mi||0) > 0) { driveMiles += s.distance_mi; driveAll.push(s); } }));
   } catch(e) {}
   const cost100 = driveMiles > 0 ? (totCost/driveMiles*100) : null;
 
@@ -4678,6 +4681,29 @@ async function loadCharging() {
         <div style="font-size:12px; color:var(--text);"><span style="color:#f59f00;">●</span> DC ${dcKWh.toFixed(1)} kWh${splitKWh>0 ? ' · '+dcPct.toFixed(0)+'%' : ''}</div>
       </div>
     </div>`;
+
+  // Monthly stats — only when the window can span multiple months.
+  const mEl = document.getElementById('chargeMonthlyStats');
+  if (mEl) {
+    if (chartRangeDays > 30 || chartRangeDays === 0) {
+      const months = {};
+      const mk = ts => { const d = new Date(ts*1000); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); };
+      const bucket = k => months[k] = months[k] || {kwh:0,cost:0,charges:0,mi:0,drives:0};
+      all.forEach(s => { const m = bucket(mk(s.start_ts)); m.kwh += s.energy_kwh||0; m.cost += s.cost||0; m.charges++; });
+      driveAll.forEach(s => { const m = bucket(mk(s.start_ts)); m.mi += s.distance_mi||0; m.drives++; });
+      const keys = Object.keys(months).sort().reverse();
+      const mName = k => new Date(k+'-15T12:00:00').toLocaleDateString([], {year:'numeric', month:'long'});
+      const td = 'padding:5px 8px; text-align:right;';
+      mEl.innerHTML = `<div style="font-size:12px; font-weight:600; color:var(--text-soft); margin-bottom:6px;">Monthly stats</div>
+        <div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px; white-space:nowrap;">
+        <tr style="color:var(--text-soft);"><th style="${td} text-align:left;">Month</th><th style="${td}">Distance</th><th style="${td}">Drives</th><th style="${td}">Energy</th><th style="${td}">Charges</th><th style="${td}">Cost</th><th style="${td}">Ø $/kWh</th><th style="${td}">Ø $/100 mi</th></tr>
+        ${keys.map(k => { const m = months[k]; return `<tr style="border-top:1px solid var(--border);"><td style="${td} text-align:left;">${mName(k)}</td><td style="${td}">${Math.round(m.mi).toLocaleString()} mi</td><td style="${td}">${m.drives}</td><td style="${td}">${m.kwh.toFixed(1)} kWh</td><td style="${td}">${m.charges}</td><td style="${td}">$${m.cost.toFixed(2)}</td><td style="${td}">${m.kwh>0 ? '$'+(m.cost/m.kwh).toFixed(2) : '—'}</td><td style="${td}">${m.mi>0 ? '$'+(m.cost/m.mi*100).toFixed(2) : '—'}</td></tr>`; }).join('')}
+        </table></div>`;
+      mEl.style.display = '';
+    } else {
+      mEl.style.display = 'none';
+    }
+  }
 
   const sessLbl = document.getElementById('chargeSessionsLabel');
   if (sessLbl) sessLbl.textContent = `Sessions (${all.length})`;
