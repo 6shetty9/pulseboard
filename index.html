@@ -211,7 +211,7 @@ input:checked + .slider:before { transform: translateX(20px); }
   <div id="dashView" style="display:none;">
     <div class="tabs">
       <button class="tab active" onclick="showTab('vehicle',this)">Vehicle</button>
-      <button class="tab" onclick="showTab('monitor',this)">Sentry monitor</button>
+      <button class="tab" onclick="showTab('monitor',this)">Sentry</button>
       <button class="tab" onclick="showTab('charge',this)">Charge</button>
       <button class="tab" onclick="showTab('battery',this)">Battery</button>
       <button class="tab" onclick="showTab('schedules',this)">Schedules</button>
@@ -246,6 +246,13 @@ input:checked + .slider:before { transform: translateX(20px); }
           <button class="btn" id="lockBtn" onclick="toggleLock()">Locks</button>
           <button class="btn" id="chargeBtn" onclick="toggleCharge()">⚡ Charge</button>
           <button class="btn" onclick="testAlert()">Test alert</button>
+          <button class="btn" onclick="flashLights()">💡 Flash</button>
+          <button class="btn" onclick="honkHorn()">📯 Honk</button>
+          <button class="btn" onclick="toggleWindows()">🪟 Windows</button>
+          <button class="btn" onclick="toggleDefrost(this)">♨️ Defrost</button>
+          <button class="btn" onclick="toggleBioweapon(this)">☣️ Bioweapon def</button>
+          <button class="btn" onclick="remoteStart()">🔑 Start</button>
+          <button class="btn" onclick="playBoombox()">💨 Fart</button>
         </div>
       </div>
     </div>
@@ -1991,6 +1998,43 @@ async function sendCmd(cmd, val) {
     await fireAlert('cmd', cmd.replace(/_/g,' '), d.response?.result ? 'Command sent successfully' : (d.response?.reason||'Sent'), 'ok');
   } catch(e) { alert('Error: '+e.message); }
 }
+
+// ---- Extra remote commands (Fleet API, signed via tesla-http-proxy) --------
+function flashLights() { sendCmd('flash_lights'); }
+function honkHorn() { sendCmd('honk_horn'); }
+
+// Vent if all windows closed, close if any open. Closing requires the car's
+// coordinates (Tesla proximity check) — pulled from the telemetry cache.
+function toggleWindows() {
+  const state = pbLiveStateByVin[S.vehicleVin] || {};
+  const closedVals = [undefined, null, '', 'Closed', 'WindowStateClosed', 'WindowStateUnknown'];
+  const open = ['FdWindow','FpWindow','RdWindow','RpWindow'].some(f => !closedVals.includes(state[f]));
+  const lat = (state.Location && state.Location.latitude) || 0;
+  const lon = (state.Location && state.Location.longitude) || 0;
+  if (open && !(lat || lon)) { alert('Need a location fix to close windows — try again in a moment.'); return; }
+  sendCmd('window_control', { command: open ? 'close' : 'vent', lat: lat, lon: lon });
+}
+
+function toggleDefrost(btn) {
+  const on = btn.dataset.on === '1';
+  btn.dataset.on = on ? '0' : '1';
+  btn.style.background = on ? '' : 'var(--red-bg)';
+  sendCmd('set_preconditioning_max', { on: !on, manual_override: true });
+}
+
+function toggleBioweapon(btn) {
+  const on = btn.dataset.on === '1';
+  btn.dataset.on = on ? '0' : '1';
+  btn.style.background = on ? '' : 'var(--red-bg)';
+  sendCmd('set_bioweapon_mode', { on: !on, manual_override: true });
+}
+
+function remoteStart() {
+  if (!confirm('Enable remote start? The car can be driven without a key for the next 2 minutes.')) return;
+  sendCmd('remote_start_drive');
+}
+
+function playBoombox() { sendCmd('remote_boombox', { sound: 0 }); }
 
 async function toggleCharge() {
   const state = pbLiveStateByVin[S.vehicleVin] || {};
