@@ -163,7 +163,6 @@ input:checked + .slider:before { transform: translateX(20px); }
   </div>
   <span class="logo-name">PulseBoard</span>
   <div class="topbar-right">
-    <span class="pill pill-off" id="monitorPill">Monitor off</span>
     <!-- Pause-alerts control. When not paused: a button that opens a duration
          menu. When paused: a "Resume (1h 23m)" button with a live countdown.
          Backed by /alerts/pause on the bridge — per-VIN with explicit expiry. -->
@@ -229,20 +228,19 @@ input:checked + .slider:before { transform: translateX(20px); }
       <div class="grid4">
         <div class="stat"><div class="stat-label">Sentry mode</div><div class="stat-val" id="sentryState">—</div><div class="stat-sub" id="sentryStateSub">—</div></div>
         <div class="stat"><div class="stat-label">Events today</div><div class="stat-val" id="eventCount">0</div><div class="stat-sub" id="lastEventTime">No events yet</div></div>
-        <div class="stat"><div class="stat-label">Last poll</div><div class="stat-val" style="font-size:15px;" id="lastPollTime">—</div><div class="stat-sub">Every 60s</div></div>
-        <div class="stat"><div class="stat-label">Next poll</div><div class="stat-val" style="font-size:15px;" id="nextPoll">—</div><div class="stat-sub" id="pollStatus">Stopped</div></div>
+        <div class="stat"><div class="stat-label">Locked</div><div class="stat-val" id="monLocked">—</div><div class="stat-sub" id="monLockedSub">—</div></div>
+        <div class="stat"><div class="stat-label">Detection</div><div class="stat-val" style="font-size:15px;">Bridge</div><div class="stat-sub">24/7 server-side (sentry.go)</div></div>
       </div>
       <div class="card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
           <div class="card-title" style="margin:0;">Live sentry feed</div>
-          <div id="liveIndicator" style="display:none;align-items:center;gap:6px;font-size:12px;color:var(--muted);"><span class="pulse"></span> Monitoring</div>
         </div>
-        <div id="feedList"><div class="empty">Start the monitor to watch your vehicle.</div></div>
+        <div id="feedList"><div class="empty">Loading sentry journal…</div></div>
       </div>
       <div class="card">
         <div class="card-title">Controls</div>
         <div class="flex-row">
-          <button class="btn" onclick="pollNow()">Poll now</button>
+          <button class="btn" onclick="pollNow()">↻ Refresh</button>
           <button class="btn btn-blue" onclick="wakeVehicle()">⏰ Wake vehicle</button>
           <button class="btn" id="sentryBtn" onclick="toggleSentry()">Sentry</button>
           <button class="btn" id="lockBtn" onclick="toggleLock()">Locks</button>
@@ -1895,41 +1893,6 @@ function renderVehicleCardFromTelemetry(t) {
 }
 
 // ── Monitor ──────────────────────────────────────────────
-async function pollVehicle() {
-  document.getElementById('lastPollTime').textContent = new Date().toLocaleTimeString();
-  if (!S.vehicleId) return;
-  try {
-    const r = await api(`/vehicles/${S.vehicleId}/vehicle_data?endpoints=vehicle_state%3Bcharge_state`);
-    if (!r.ok) { 
-      S.vehicleWasAsleep = true; // track that vehicle was asleep
-      await fireAlert('error','Poll error','Could not reach vehicle — may be asleep','warn'); return; 
-    }
-    const d = (await r.json()).response;
-    const vs = d.vehicle_state, cs = d.charge_state;
-    if (!vs.locked) await fireAlert('unlock','Vehicle unlocked','Doors are currently unlocked','warn');
-    if (cs.battery_level < 20) await fireAlert('battery','Low battery',`Battery at ${cs.battery_level}%`,'warn');
-    if (S.sentryOn && !vs.sentry_mode) await fireAlert('sentry_off','⚠ Sentry disabled!','Sentry turned off unexpectedly','err');
-    else if (vs.sentry_mode) {
-      // Detect sentry camera event: vehicle woke up while parked with sentry on
-      // Tesla wakes the car when sentry detects a significant threat
-      const wasAsleep = S.vehicleWasAsleep;
-      const isParked = !d.drive_state?.shift_state || d.drive_state?.shift_state === 'P';
-      if (wasAsleep && isParked && vs.sentry_mode) {
-        await fireAlert('camera','⚠ Sentry event detected!','Vehicle woke up while parked — possible security threat','err');
-        // Deterrent action is handled server-side now (sentry.go).
-      } else {
-        await fireAlert('heartbeat','Sentry heartbeat','Sentry active, vehicle secured','ok');
-      }
-    }
-    S.sentryOn = vs.sentry_mode;
-    S.lastLocked = vs.locked;
-    updateControlButtons();
-    S.vehicleWasAsleep = false; // vehicle is awake now
-    document.getElementById('sentryState').textContent = vs.sentry_mode ? 'Enabled' : 'Disabled';
-    document.getElementById('sentryStateSub').textContent = vs.locked ? 'Locked' : 'UNLOCKED';
-  } catch(e) { await fireAlert('error','Poll failed',e.message,'warn'); }
-}
-
 async function wakeVehicle() {
   if (!S.vehicleId) return;
   await fireAlert('wake','Waking vehicle','Sending wake command…','ok');
@@ -1939,7 +1902,7 @@ async function wakeVehicle() {
     const t = setInterval(async () => {
       tries++;
       const r = await api(`/vehicles/${S.vehicleId}/vehicle_data?endpoints=vehicle_state`).catch(() => null);
-      if (r && r.ok) { clearInterval(t); await fireAlert('wake','Vehicle awake!','Connected successfully','ok'); pollVehicle(); loadVehicleCard(); }
+      if (r && r.ok) { clearInterval(t); await fireAlert('wake','Vehicle awake!','Connected successfully','ok'); loadVehicleCard(); }
       else if (tries >= 6) { clearInterval(t); await fireAlert('wake','Wake timed out','Try again or open the Tesla app','warn'); }
     }, 5000);
   } catch(e) { await fireAlert('wake','Wake failed',e.message,'warn'); }
@@ -1960,12 +1923,58 @@ function toggleMonitor() {
 // state changes in real time without resetting the car's sleep timer.
 function startCountdown() { /* no-op: telemetry is push-based, no countdown */ }
 
-function pollNow() {
-  // Manual refresh: pull a one-shot vehicle_data snapshot (this WILL wake the car).
-  if (!S.monitoring) { alert('Start the monitor first.'); return; }
-  if (!confirm('Manual refresh wakes the car to fetch a fresh snapshot. Continue?')) return;
-  loadVehicleCard();
+// ---- Sentry journal feed (replaces the old browser-side poll monitor) ------
+//
+// Detection lives on the bridge (sentry.go). This renders the bridge's
+// in-memory decision journal — fired / scheduled / suppressed with reasons —
+// plus live tiles from the telemetry cache. No REST polling: nothing here can
+// keep the car awake.
+async function renderSentryJournal() {
+  const el = document.getElementById('feedList');
+  if (!el) return;
+  updateMonitorTiles();
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) { el.innerHTML = '<div class="empty">Proxy secret not set.</div>'; return; }
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/sentry/journal?secret=${secret}&vin=${S.vehicleVin || ''}`);
+    const entries = (await r.json()).entries || [];
+    const midnight = new Date(); midnight.setHours(0,0,0,0);
+    const ec = document.getElementById('eventCount');
+    if (ec) ec.textContent = entries.filter(e => e.ts*1000 >= midnight.getTime()).length;
+    const lastEl = document.getElementById('lastEventTime');
+    if (lastEl) lastEl.textContent = entries.length ? new Date(entries[0].ts*1000).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : 'No events yet';
+    if (!entries.length) { el.innerHTML = '<div class="empty">No sentry decisions yet — the journal fills as the deterrent evaluates events (cleared on bridge restart).</div>'; return; }
+    const icon = ev => ev.endsWith('_fired') ? '🚨' : ev === 'tier2_scheduled' ? '⏳' : ev.endsWith('_suppressed') ? '✋' : '🧪';
+    el.innerHTML = entries.slice(0, 100).map(e => {
+      const d = new Date(e.ts*1000);
+      const when = d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit', second:'2-digit'});
+      return `<div style="display:flex; gap:10px; padding:8px 4px; border-bottom:1px solid var(--border); font-size:13px; align-items:baseline;">` +
+        `<span>${icon(e.event)}</span>` +
+        `<span style="font-weight:600; white-space:nowrap;">${e.event.replace(/_/g,' ')}</span>` +
+        `<span style="color:var(--text-soft); flex:1;">${e.detail || ''}</span>` +
+        `<span style="color:var(--text-soft); white-space:nowrap;">${when}</span></div>`;
+    }).join('');
+  } catch(e) { el.innerHTML = '<div class="empty">Journal unavailable.</div>'; }
 }
+
+function updateMonitorTiles() {
+  const state = pbLiveStateByVin[S.vehicleVin] || {};
+  const set = (id, v) => { const n = document.getElementById(id); if (n) n.textContent = v; };
+  if ('SentryMode' in state) {
+    const off = state.SentryMode === 'SentryModeStateOff' || state.SentryMode === 'SentryModeStateIdle';
+    set('sentryState', off ? 'Disabled' : 'Enabled');
+    set('sentryStateSub', 'live via telemetry');
+  }
+  const lk = pbBool(state.Locked);
+  set('monLocked', lk === true ? 'Locked' : lk === false ? 'UNLOCKED' : '—');
+  if (lk != null) set('monLockedSub', 'live via telemetry');
+}
+
+function pollNow() {
+  renderSentryJournal();
+  updateControlButtons();
+}
+
 
 async function sendCmd(cmd, val) {
   if (!S.vehicleVin) return;
@@ -2835,6 +2844,8 @@ function ensureTelemetryConnected() {
 setTimeout(ensureTelemetryConnected, 500);
 // Then check every 15s — if WSS dropped or was never established, reconnect.
 setInterval(ensureTelemetryConnected, 15000);
+setInterval(() => { const t = document.getElementById('tab-monitor'); if (t && t.style.display !== 'none') renderSentryJournal(); }, 30000);
+setTimeout(renderSentryJournal, 2500);
 // Reconnect immediately when the tab becomes visible again (laptop wake,
 // switching back from another tab). Catches the common "came back to find
 // dashes" case.
