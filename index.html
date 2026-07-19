@@ -415,6 +415,7 @@ input:checked + .slider:before { transform: translateX(20px); }
           </div>
           <div style="font-size:11px; color:var(--text-soft); margin-bottom:14px;">Past costs stay frozen at the rate when charged. Use “Recalculate” to re-apply current rates to all history.</div>
           <div id="chargeSummary" style="display:none; margin-bottom:14px;"></div>
+          <div id="chargeSessionsToggle" onclick="toggleChargeSessions()" style="display:none; align-items:center; gap:6px; cursor:pointer; font-size:12px; font-weight:600; color:var(--text-soft); margin-bottom:8px; user-select:none;"><span id="chargeSessionsCaret">▸</span><span id="chargeSessionsLabel">Sessions</span></div>
           <div id="chargeCostSessions"><div class="empty">Loading…</div></div>
         </div>
 
@@ -4585,6 +4586,24 @@ async function loadBatteryDegradation() {
   });
 }
 
+// Session list collapse (default collapsed — the list runs long and buries the
+// cards below it). State persists in localStorage.
+function applyChargeSessionsCollapse() {
+  const open = localStorage.getItem('pb_charge_sessions_open') === '1';
+  const list = document.getElementById('chargeCostSessions');
+  const caret = document.getElementById('chargeSessionsCaret');
+  const tog = document.getElementById('chargeSessionsToggle');
+  if (!list || !tog) return;
+  tog.style.display = 'flex';
+  list.style.display = open ? '' : 'none';
+  caret.textContent = open ? '▾' : '▸';
+}
+function toggleChargeSessions() {
+  const open = localStorage.getItem('pb_charge_sessions_open') === '1';
+  localStorage.setItem('pb_charge_sessions_open', open ? '0' : '1');
+  applyChargeSessionsCollapse();
+}
+
 async function loadCharging() {
   const secret = localStorage.getItem('pb_proxy_secret');
   const listEl = document.getElementById('chargeCostSessions');
@@ -4622,6 +4641,7 @@ async function loadCharging() {
   if (all.length === 0) {
     listEl.innerHTML = '<div class="empty">No charging sessions in this period.</div>';
     sumEl.style.display = 'none';
+    const tg0 = document.getElementById('chargeSessionsToggle'); if (tg0) tg0.style.display = 'none';
     return;
   }
 
@@ -4636,6 +4656,10 @@ async function loadCharging() {
     <div class="stat"><div class="stat-label">Total energy</div><div class="stat-val">${totKWh.toFixed(1)}</div><div class="stat-sub">kWh · ${all.length} session${all.length===1?'':'s'}</div></div>
     <div class="stat"><div class="stat-label">Total cost</div><div class="stat-val">$${totCost.toFixed(2)}</div><div class="stat-sub">${homeCount} home · ${all.length-homeCount} away</div></div>
     <div class="stat"><div class="stat-label">Avg cost/kWh</div><div class="stat-val">$${totKWh>0 ? (totCost/totKWh).toFixed(2) : '0.00'}</div><div class="stat-sub">blended</div></div>`;
+
+  const sessLbl = document.getElementById('chargeSessionsLabel');
+  if (sessLbl) sessLbl.textContent = `Sessions (${all.length})`;
+  applyChargeSessionsCollapse();
 
   // Session list with per-row home/away override.
   listEl.innerHTML = all.map(s => {
