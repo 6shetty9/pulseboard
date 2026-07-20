@@ -975,6 +975,20 @@ let locationMap = null;         // Leaflet map for Motion & Location tab
 let locationMarker = null;
 let locationMapEl = null;       // persistent map DOM node (survives innerHTML rebuilds)
 let locationLastLatLng = null;  // last marker position, to suppress GPS-noise jitter
+let pbArrowAngle = 0;           // cumulative arrow rotation (shortest-arc)
+function pbBearing(a, b) {
+  const toRad = x => x*Math.PI/180;
+  const dLon = toRad(b[1]-a[1]);
+  const y = Math.sin(dLon)*Math.cos(toRad(b[0]));
+  const x = Math.cos(toRad(a[0]))*Math.sin(toRad(b[0])) - Math.sin(toRad(a[0]))*Math.cos(toRad(b[0]))*Math.cos(dLon);
+  return (Math.atan2(y,x)*180/Math.PI + 360) % 360;
+}
+function pbShortestArc(fromDeg, toDeg) {
+  let d = (toDeg - ((fromDeg % 360) + 360) % 360) % 360;
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  return d;
+}
 
 // Fetch the bridge's authoritative last-telemetry timestamp for all vehicles.
 // This is accurate across browser restarts (the bridge runs 24/7).
@@ -1457,16 +1471,24 @@ function updateLiveDisplay() {
         const moved = !locationLastLatLng ||
           Math.abs(locationLastLatLng[0] - latitude) > 0.00002 ||
           Math.abs(locationLastLatLng[1] - longitude) > 0.00002;
+        const svgEl = locationMarker.getElement && locationMarker.getElement();
+        const arrow = svgEl && svgEl.querySelector('svg');
         if (moved) {
+          // While moving, rotate to the ACTUAL movement vector in the same
+          // frame as the position glide. GpsHeading streams at 5s vs
+          // Location's 1s, so trusting it mid-drive pointed the arrow
+          // sideways relative to travel.
+          if (arrow && locationLastLatLng) {
+            pbArrowAngle += pbShortestArc(pbArrowAngle, pbBearing(locationLastLatLng, [latitude, longitude]));
+            arrow.style.transform = `rotate(${pbArrowAngle}deg)`;
+          }
           locationMarker.setLatLng([latitude, longitude]);
           locationMap.panTo([latitude, longitude], { animate: true, duration: 1.0, easeLinearity: 1 });
           locationLastLatLng = [latitude, longitude];
-        }
-        // Rotate the arrow to the current heading (independent of movement).
-        if (typeof state.GpsHeading === 'number') {
-          const svg = locationMarker.getElement && locationMarker.getElement();
-          const path = svg && svg.querySelector('svg');
-          if (path) path.style.transform = `rotate(${state.GpsHeading}deg)`;
+        } else if (arrow && typeof state.GpsHeading === 'number') {
+          // Stationary: no movement vector to derive — GpsHeading is fine.
+          pbArrowAngle += pbShortestArc(pbArrowAngle, state.GpsHeading);
+          arrow.style.transform = `rotate(${pbArrowAngle}deg)`;
         }
       }
     }
