@@ -264,6 +264,19 @@ input:checked + .slider:before { transform: translateX(20px); }
       </div>
       <div class="card" id="vehicleCard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
       <div class="card">
+        <div class="card-title" style="display:flex; align-items:center; justify-content:space-between;">
+          <span>🕒 States — last 24h</span>
+          <span id="stateTimelineRange" style="font-size:11px; color:var(--text-soft); font-weight:400;"></span>
+        </div>
+        <div id="stateTimeline" style="display:flex; height:34px; border-radius:6px; overflow:hidden; border:1px solid var(--border);"><div class="empty" style="width:100%;">Loading…</div></div>
+        <div style="display:flex; gap:14px; margin-top:8px; font-size:11.5px; color:var(--text-soft);">
+          <span><span style="color:#b6bcc4;">●</span> Offline / asleep</span>
+          <span><span style="color:#f59f00;">●</span> Online</span>
+          <span><span style="color:#4285f4;">●</span> Driving</span>
+          <span><span style="color:#2f9e44;">●</span> Charging</span>
+        </div>
+      </div>
+      <div class="card">
         <div class="card-title">
           Live telemetry
           <span id="liveStatus" class="pill pill-off" style="margin-left: 8px; font-size: 11px;">offline</span>
@@ -1800,7 +1813,33 @@ function vehCtxSwitch(id) {
   Promise.resolve(switchVehicle(id)).then(() => {
     if (document.getElementById('tab-charge').style.display !== 'none') { syncChargeSliders(); loadChargeChart(); }
     if (document.getElementById('tab-monitor').style.display !== 'none') renderSentryJournal();
+    const tv = document.getElementById('tab-vehicle'); if (tv && tv.style.display !== 'none') renderStateTimeline();
   });
+}
+
+// ---- State timeline (TeslaMate-style states bar, Vehicle tab) --------------
+const pbStateColors = { offline:'#b6bcc4', online:'#f59f00', driving:'#4285f4', charging:'#2f9e44' };
+async function renderStateTimeline() {
+  const el = document.getElementById('stateTimeline');
+  if (!el) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !S.vehicleVin) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/vehicle/states?secret=${secret}&vin=${S.vehicleVin}&hours=24`);
+    const d = await r.json();
+    const segs = d.segments || [];
+    if (!segs.length) { el.innerHTML = '<div class="empty" style="width:100%;">No data yet.</div>'; return; }
+    const total = d.to - d.from;
+    const fmt = ts => new Date(ts*1000).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    el.innerHTML = segs.map(sg => {
+      const w = ((sg.end_ts - sg.start_ts) / total * 100).toFixed(3);
+      const mins = Math.round((sg.end_ts - sg.start_ts)/60);
+      const dur = mins >= 60 ? `${Math.floor(mins/60)}h ${mins%60}m` : `${mins}m`;
+      return `<div title="${sg.state} · ${fmt(sg.start_ts)} → ${fmt(sg.end_ts)} (${dur})" style="width:${w}%; background:${pbStateColors[sg.state]||'#ccc'};"></div>`;
+    }).join('');
+    const rangeEl = document.getElementById('stateTimelineRange');
+    if (rangeEl) rangeEl.textContent = `${fmt(d.from)} → ${fmt(d.to)}`;
+  } catch(e) { /* keep last render */ }
 }
 
 async function loadVehicleCard() {
@@ -2915,6 +2954,8 @@ setTimeout(ensureTelemetryConnected, 500);
 setInterval(ensureTelemetryConnected, 15000);
 setInterval(() => { const t = document.getElementById('tab-monitor'); if (t && t.style.display !== 'none') renderSentryJournal(); }, 30000);
 setTimeout(renderSentryJournal, 2500);
+setInterval(() => { const t = document.getElementById('tab-vehicle'); if (t && t.style.display !== 'none') renderStateTimeline(); }, 300000);
+setTimeout(renderStateTimeline, 3000);
 // Reconnect immediately when the tab becomes visible again (laptop wake,
 // switching back from another tab). Catches the common "came back to find
 // dashes" case.
