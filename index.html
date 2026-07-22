@@ -1843,6 +1843,7 @@ async function renderStateTimeline() {
 }
 
 async function loadVehicleCard() {
+  renderStateTimeline(); // states bar follows whichever vehicle the card shows
   const el = document.getElementById('vehicleCard');
   if (!S.vehicleId) { el.innerHTML = '<div class="empty">No vehicle selected.</div>'; return; }
 
