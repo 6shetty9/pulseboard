@@ -1794,10 +1794,13 @@ function renderVehicleContext() {
 }
 function vehCtxSwitch(id) {
   if (id === S.vehicleId) return;
-  switchVehicle(id);
-  // switchVehicle refreshes battery/zones/schedules/live; the Charge tab has
-  // its own loaders that it doesn't cover — refresh them if we're on it.
-  if (document.getElementById('tab-charge').style.display !== 'none') { syncChargeSliders(); loadChargeChart(); }
+  // switchVehicle refreshes battery/zones/schedules/live; the Charge and
+  // Sentry tabs have their own loaders it doesn't cover — refresh those
+  // AFTER the switch settles so they read the new S.vehicleVin.
+  Promise.resolve(switchVehicle(id)).then(() => {
+    if (document.getElementById('tab-charge').style.display !== 'none') { syncChargeSliders(); loadChargeChart(); }
+    if (document.getElementById('tab-monitor').style.display !== 'none') renderSentryJournal();
+  });
 }
 
 async function loadVehicleCard() {
