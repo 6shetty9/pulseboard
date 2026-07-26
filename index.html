@@ -362,6 +362,7 @@ input:checked + .slider:before { transform: translateX(20px); }
             <button class="chip" onclick="setChartView('battery',this)">🔋 Battery patterns</button>
             <button class="chip" onclick="setChartView('mileage',this)">🛣 Mileage</button>
             <button class="chip" onclick="setChartView('drives',this)">🚗 Drives</button>
+            <button class="chip" onclick="setChartView('vampire',this)">🧛 Vampire</button>
           </div>
           <!-- Car selector: M3L / MYP / Both -->
           <div id="chartCarToggle" style="display:flex; gap:6px;"></div>
@@ -496,6 +497,17 @@ input:checked + .slider:before { transform: translateX(20px); }
       </div>
 
       <!-- ===== Battery patterns view ===== -->
+      <div id="chartview-vampire" style="display:none;">
+        <div class="card">
+          <div class="card-title" style="display:flex; align-items:center; justify-content:space-between;">
+            <span>🧛 Vampire drain</span>
+            <span style="font-size:11px; color:var(--text-soft); font-weight:400;">idle ≥ 6h · parked, not charging</span>
+          </div>
+          <div style="font-size:12px; color:var(--text-soft); margin-bottom:10px;">What the car loses just sitting there. Standby % is time asleep — a low standby with high Ø power usually means Sentry or Cabin Overheat Protection kept the car awake.</div>
+          <div id="vampireContent"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
       <div id="chartview-battery" style="display:none;">
         <div class="card">
           <div class="card-title">🔋 Battery patterns</div>
@@ -3713,11 +3725,54 @@ function setChartCar(val) {
   loadChartView();
 }
 
+async function loadVampireDrain() {
+  const el = document.getElementById('vampireContent');
+  if (!el) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const vins = chartSelectedVins();
+  if (!vins.length) { el.innerHTML = '<div class="empty">No vehicle selected.</div>'; return; }
+  const days = chartRangeDays > 0 ? Math.min(chartRangeDays, 180) : 90;
+  el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading…</div>';
+  const fmtD = ts => new Date(ts*1000).toLocaleString([], {month:'2-digit', day:'2-digit', hour:'numeric', minute:'2-digit'});
+  const dur = sec => { const h = sec/3600; return h >= 24 ? (h/24).toFixed(1)+' days' : h.toFixed(1)+' h'; };
+  let html = '';
+  for (const vin of vins) {
+    let d;
+    try {
+      const r = await fetch(`${BRIDGE_BASE}/vampire?secret=${secret}&vin=${vin}&days=${days}&min_hours=6`);
+      d = await r.json();
+    } catch(e) { continue; }
+    const ps = d.periods || [];
+    const name = (S.vehicles.find(v=>v.vin===vin)||{}).name?.replace('Tesla ','') || vin.slice(-6);
+    if (vins.length > 1) html += `<div style="font-size:12px; font-weight:600; margin:10px 0 6px;">${name}</div>`;
+    if (!ps.length) { html += '<div class="empty">No idle periods ≥ 6h in range.</div>'; continue; }
+    const td = 'padding:5px 8px; text-align:right; white-space:nowrap;';
+    html += `<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+      <tr style="color:var(--text-soft);"><th style="${td} text-align:left;">Start</th><th style="${td} text-align:left;">End</th><th style="${td}">Period</th><th style="${td}">Standby</th><th style="${td}">SoC</th><th style="${td}">Range loss</th><th style="${td}">Energy</th><th style="${td}">Ø Power</th><th style="${td}">Ø loss / h</th></tr>`;
+    ps.forEach(pp => {
+      const busy = pp.standby_pct < 50 && pp.avg_w > 50;
+      const lossH = pp.range_loss_mi / (pp.duration_s/3600);
+      html += `<tr style="border-top:1px solid var(--border);${busy ? ' color:var(--red-text);' : ''}">` +
+        `<td style="${td} text-align:left;">${fmtD(pp.start_ts)}</td>` +
+        `<td style="${td} text-align:left;">${pp.ongoing ? 'now' : fmtD(pp.end_ts)}</td>` +
+        `<td style="${td}">${dur(pp.duration_s)}</td>` +
+        `<td style="${td}">${pp.standby_pct.toFixed(0)}%</td>` +
+        `<td style="${td}">${pp.soc_diff.toFixed(1)}%</td>` +
+        `<td style="${td}">${pp.range_loss_mi.toFixed(2)} mi</td>` +
+        `<td style="${td}">${pp.energy_wh >= 1000 ? (pp.energy_wh/1000).toFixed(2)+' kWh' : pp.energy_wh.toFixed(0)+' Wh'}</td>` +
+        `<td style="${td}">${pp.avg_w.toFixed(1)} W</td>` +
+        `<td style="${td}">${lossH.toFixed(2)} mi</td></tr>`;
+    });
+    html += '</table></div>';
+  }
+  el.innerHTML = html || '<div class="empty">No data.</div>';
+}
+
 function setChartView(view, el) {
   chartView = view;
   document.querySelectorAll('#chartSubtabs .chip').forEach(c => c.classList.remove('chip-active'));
   if (el) el.classList.add('chip-active');
-  ['efficiency','mileage','charging','drives','battery'].forEach(v => {
+  ['efficiency','mileage','charging','drives','battery','vampire'].forEach(v => {
     const node = document.getElementById('chartview-' + v);
     if (node) node.style.display = (v === view) ? 'block' : 'none';
   });
@@ -3741,6 +3796,7 @@ function loadChartView() {
   else if (chartView === 'mileage') loadMileage();
   else if (chartView === 'drives') loadDriveSessions();
   else if (chartView === 'battery') loadBatteryPatterns();
+  else if (chartView === 'vampire') loadVampireDrain();
 }
 
 // ---- Mileage stats (per month, per vehicle) ----
