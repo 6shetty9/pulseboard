@@ -4905,6 +4905,7 @@ async function loadCharging() {
       ${btn('🏠 Home', '1', s.is_home && overridden)}
       ${btn('🔌 Away', '0', !s.is_home && overridden)}
       ${btn('Auto', 'auto', !overridden)}
+      <button onclick="toggleChargeCurve(this, '${s._vin}', ${s.start_ts}, ${s.id})" style="font-size:10px; padding:2px 8px; border-radius:5px; cursor:pointer; border:1px solid var(--border); background:transparent; color:var(--text-soft);">⚡ Curve</button>
       ${overridden ? '<span style="font-size:10px; color:var(--text-soft);">manual</span>' : ''}
     </div>`;
     return `<div class="row" style="flex-direction:column; align-items:stretch; gap:0;">
@@ -4916,6 +4917,7 @@ async function loadCharging() {
         <span class="row-val" style="text-align:right;">${(s.energy_kwh||0).toFixed(1)} kWh · ${durStr}${soc?' · '+soc:''}<br><span style="font-weight:600;">$${(s.cost||0).toFixed(2)}</span> <span style="font-size:11px; color:var(--text-soft);">@ $${(s.rate_used||0).toFixed(2)}</span></span>
       </div>
       ${controls}
+      <div id="curveHolder-${s.id}" style="display:none; margin-top:8px; height:180px;"></div>
     </div>`;
   }).join('');
 
@@ -4923,6 +4925,53 @@ async function loadCharging() {
   renderTopStations(chargingSessionsCache, vins);
   renderSocDistribution(chargingSessionsCache, vins);
   renderChargeHeatmap(chargingSessionsCache, vins);
+}
+
+// Per-session charging curve — kW (PackVoltage × PackCurrent) vs SOC from
+// /charging/series. Only sessions after the Jul 15 2026 config have pack data.
+let chargeCurveCharts = {};
+async function toggleChargeCurve(btn, vin, startTs, sid) {
+  const holder = document.getElementById('curveHolder-' + sid);
+  if (!holder) return;
+  if (holder.style.display !== 'none') {
+    holder.style.display = 'none';
+    if (chargeCurveCharts[sid]) { try { chargeCurveCharts[sid].destroy(); } catch(e){} delete chargeCurveCharts[sid]; }
+    holder.innerHTML = '';
+    return;
+  }
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const orig = btn.textContent;
+  btn.textContent = '⚡ Loading…';
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/charging/series?secret=${secret}&vin=${vin}&start_ts=${startTs}`);
+    const d = await r.json();
+    const pts = d.points || [];
+    btn.textContent = orig;
+    if (!pts.length) {
+      btn.textContent = 'No curve data';
+      setTimeout(() => { btn.textContent = orig; }, 2500);
+      return;
+    }
+    holder.style.display = '';
+    holder.innerHTML = '<canvas></canvas>';
+    chargeCurveCharts[sid] = new Chart(holder.querySelector('canvas'), {
+      type: 'line',
+      data: { datasets: [{ data: pts.map(pp => ({x: pp.soc, y: pp.kw, ts: pp.ts})),
+        borderColor: '#4285f4', backgroundColor: 'rgba(66,133,244,0.08)', fill: true,
+        pointRadius: 0, borderWidth: 1.5, tension: 0.15 }] },
+      options: {
+        animation: false, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: {
+          title: items => items[0].raw.x.toFixed(1) + '% SOC · ' + new Date(items[0].raw.ts*1000).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}),
+          label: item => item.parsed.y.toFixed(1) + ' kW'
+        } } },
+        scales: {
+          x: { type: 'linear', title: { display: true, text: 'SOC %', font: {size: 10} }, ticks: { font: {size: 10} } },
+          y: { beginAtZero: true, title: { display: true, text: 'kW', font: {size: 10} }, ticks: { font: {size: 10} } }
+        }
+      }
+    });
+  } catch(e) { btn.textContent = orig; }
 }
 
 // Set (or clear) a single session's home/away override and recompute just that row.
