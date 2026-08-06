@@ -277,6 +277,10 @@ input:checked + .slider:before { transform: translateX(20px); }
         </div>
       </div>
       <div class="card">
+        <div class="card-title">⬆️ Firmware history</div>
+        <div id="firmwareHistory"><div class="empty">Loading…</div></div>
+      </div>
+      <div class="card">
         <div class="card-title">
           Live telemetry
           <span id="liveStatus" class="pill pill-off" style="margin-left: 8px; font-size: 11px;">offline</span>
@@ -1854,8 +1858,31 @@ async function renderStateTimeline() {
   } catch(e) { /* keep last render */ }
 }
 
+// Firmware history card — /firmware/history rows for the selected vehicle,
+// with days-on-version computed between consecutive first_seen stamps.
+async function loadFirmwareHistory() {
+  const el = document.getElementById('firmwareHistory');
+  if (!el) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !S.vehicleVin) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/firmware/history?secret=${secret}&vin=${S.vehicleVin}`);
+    const rows = (await r.json()).history || [];
+    if (!rows.length) { el.innerHTML = '<div class="empty">No firmware history yet.</div>'; return; }
+    el.innerHTML = rows.map((f, i) => {
+      const when = new Date(f.first_seen_ts*1000).toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'});
+      const until = i > 0 ? rows[i-1].first_seen_ts : Math.floor(Date.now()/1000);
+      const days = Math.max(1, Math.round((until - f.first_seen_ts)/86400));
+      return `<div style="display:flex; justify-content:space-between; padding:6px 4px; border-bottom:1px solid var(--border); font-size:13px;">
+        <span style="font-weight:${i===0?'600':'400'};">${f.version}${i===0?' <span style="font-size:10px; color:#2f9e44;">current</span>':''}</span>
+        <span style="color:var(--text-soft);">${when} · ${days}d</span></div>`;
+    }).join('');
+  } catch(e) { el.innerHTML = '<div class="empty">Unavailable.</div>'; }
+}
+
 async function loadVehicleCard() {
   renderStateTimeline(); // states bar follows whichever vehicle the card shows
+  loadFirmwareHistory();
   const el = document.getElementById('vehicleCard');
   if (!S.vehicleId) { el.innerHTML = '<div class="empty">No vehicle selected.</div>'; return; }
 
