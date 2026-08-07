@@ -1080,7 +1080,7 @@ function connectTelemetry() {
   
   if (pbWs && (pbWs.readyState === WebSocket.OPEN || pbWs.readyState === WebSocket.CONNECTING)) return;
   
-  pbWs = new WebSocket(`wss://telemetry.6shetty9.com:8444/ws?secret=${secret}`);
+  pbWs = new WebSocket(`${BRIDGE_BASE.replace('http','ws')}/ws?secret=${secret}`);
   
   pbWs.onopen = () => {
     console.log('[telemetry] connected');
@@ -1709,7 +1709,11 @@ const CAR_COLORS = {
   '7SAYGDET9TA621106': { solid: '#E24B4A', soft: 'rgba(226,75,74,.75)', name: 'MYP' },  // red MYP
 };
 let chargingSessionsCache = [];
-const BRIDGE_BASE = 'https://telemetry.6shetty9.com:8444';
+// Bridge URL. Default goes through Cloudflare on plain 443 (work-network
+// friendly); the localStorage override is the per-device escape hatch back to
+// direct-8444 if the CF path ever misbehaves:
+//   localStorage.setItem('pb_bridge_base', 'https://telemetry.6shetty9.com:8444')
+const BRIDGE_BASE = localStorage.getItem('pb_bridge_base') || 'https://bridge.6shetty9.com';
 
 // ── Dashboard ────────────────────────────────────────────
 async function showDash() {
@@ -3016,7 +3020,7 @@ async function loadChargeChart() {
   const now = Math.floor(Date.now() / 1000);
   const dayAgo = now - 86400;
   try {
-    const r = await fetch(`https://telemetry.6shetty9.com:8444/history?secret=${secret}&vin=${S.vehicleVin}&field=Soc&from=${dayAgo}&to=${now}`);
+    const r = await fetch(`${BRIDGE_BASE}/history?secret=${secret}&vin=${S.vehicleVin}&field=Soc&from=${dayAgo}&to=${now}`);
     const d = await r.json();
     const empty = document.getElementById('chargeChartEmpty');
     const wrap = document.getElementById('chargeChartWrap');
@@ -3204,7 +3208,7 @@ async function loadDriveSessions() {
     let allSessions = [];
 
     for (const vin of vins) {
-      const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving?secret=${secret}&vin=${vin}&limit=500`);
+      const r = await fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${vin}&limit=500`);
       const d = await r.json();
       (d.sessions || []).forEach(s => { s._vin = vin; allSessions.push(s); });
     }
@@ -3437,7 +3441,7 @@ async function showDriveRoute(idx) {
   }
 
   try {
-    const r = await fetch(`https://telemetry.6shetty9.com:8444/sessions/driving/route?secret=${secret}&vin=${vin}&start_ts=${s.start_ts}&end_ts=${s.end_ts}`);
+    const r = await fetch(`${BRIDGE_BASE}/sessions/driving/route?secret=${secret}&vin=${vin}&start_ts=${s.start_ts}&end_ts=${s.end_ts}`);
     const d = await r.json();
 
     // Remove previous route
@@ -5185,7 +5189,7 @@ async function loadBatteryHealth() {
   if (notesEl) notesEl.textContent = '';
 
   try {
-    const r = await fetch(`https://telemetry.6shetty9.com:8444/battery/health?secret=${secret}&vin=${S.vehicleVin}&days=${batteryRangeDays}`);
+    const r = await fetch(`${BRIDGE_BASE}/battery/health?secret=${secret}&vin=${S.vehicleVin}&days=${batteryRangeDays}`);
     const d = await r.json();
 
     if (!d.samples || d.samples.length === 0) {
