@@ -802,6 +802,19 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div class="row"><span class="row-label">Connected as</span><span class="row-val" id="sessionVehicle">—</span></div>
         <div style="margin-top:12px;"><button class="btn" onclick="disconnect()">Disconnect & sign out</button></div>
       </div>
+      <div class="card">
+        <div class="card-title">Timezone</div>
+        <div style="font-size:12px; color:var(--text-soft); margin-bottom:10px; line-height:1.5;">
+          Used for alert times ("done ~6:40 PM") and schedule evaluation. Schedules pick up a change on the bridge's next reload.
+        </div>
+        <div class="row" style="align-items:center;">
+          <span class="row-label">Display timezone</span>
+          <span class="row-val" style="display:flex; align-items:center; gap:8px;">
+            <select id="tzSelect" onchange="saveTimezone(this.value)" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:13px;"></select>
+            <span id="tzNow" style="font-size:12px; color:var(--text-soft);"></span>
+          </span>
+        </div>
+      </div>
       <!-- Alert preferences (Phase 2 of alerts work, Jun 4 2026). Per-vehicle,
            per-kind toggles for both "fire this alert at all" and "suppress at
            home." Rendered dynamically by renderAlertPrefs() since the set of
@@ -1925,6 +1938,34 @@ async function loadFirmwareHistory() {
   } catch(e) { el.innerHTML = '<div class="empty">Unavailable.</div>'; }
 }
 
+// Timezone setting — app_settings-backed on the bridge (was a hardcoded
+// America/Chicago constant). The stored zone is injected into the list if it
+// isn't one of the common presets.
+const PB_TIMEZONES = ['America/Chicago','America/New_York','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu','Europe/London','Europe/Berlin','Asia/Kolkata','Asia/Tokyo','Australia/Sydney','UTC'];
+async function loadTimezoneSetting() {
+  const sel = document.getElementById('tzSelect');
+  if (!sel) return;
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret) return;
+  try {
+    const r = await fetch(`${BRIDGE_BASE}/settings/timezone?secret=${secret}`);
+    const d = await r.json();
+    const list = PB_TIMEZONES.includes(d.timezone) ? PB_TIMEZONES : [d.timezone, ...PB_TIMEZONES];
+    sel.innerHTML = list.map(tz => `<option value="${tz}"${tz===d.timezone?' selected':''}>${tz.replace('_',' ')}</option>`).join('');
+    const now = document.getElementById('tzNow');
+    if (now) now.textContent = `${d.local_time} \u00b7 UTC${d.utc_offset_hr >= 0 ? '+' : ''}${d.utc_offset_hr}`;
+  } catch(e) {}
+}
+async function saveTimezone(tz) {
+  const secret = localStorage.getItem('pb_proxy_secret');
+  const now = document.getElementById('tzNow');
+  if (now) now.textContent = 'saving\u2026';
+  try {
+    await fetch(`${BRIDGE_BASE}/settings/timezone?secret=${secret}&tz=${encodeURIComponent(tz)}`, { method: 'POST' });
+  } catch(e) {}
+  loadTimezoneSetting();
+}
+
 async function loadVehicleCard() {
   renderStateTimeline(); // states bar follows whichever vehicle the card shows
   loadFirmwareHistory();
@@ -3041,6 +3082,7 @@ setInterval(() => { const t = document.getElementById('tab-monitor'); if (t && t
 setTimeout(renderSentryJournal, 2500);
 setInterval(() => { const t = document.getElementById('tab-vehicle'); if (t && t.style.display !== 'none') renderStateTimeline(); }, 300000);
 setTimeout(renderStateTimeline, 3000);
+setTimeout(loadTimezoneSetting, 3200);
 // Reconnect immediately when the tab becomes visible again (laptop wake,
 // switching back from another tab). Catches the common "came back to find
 // dashes" case.
