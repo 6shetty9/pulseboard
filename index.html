@@ -135,6 +135,34 @@
     .v-vin { font-size: 11px; color: var(--hint); margin-top: 2px; font-family: monospace; }
     .v-status { font-size: 11px; color: var(--muted); margin-top: 2px; }
     @media(max-width:600px){ .grid4{grid-template-columns:1fr 1fr;} }
+
+    /* ---- PHONE LAYOUT (<=480px) -------------------------------------------
+       The 11-tab row is the main offender: as a fit-content flex row it
+       overflows and wraps into a scattered block. Make it a single scrolling
+       strip (snap points, no visible scrollbar), then tighten the rest to
+       phone scale and respect the notch/home-indicator insets since the PWA
+       runs standalone. */
+    @media(max-width:480px){
+      .topbar { padding: 0 12px; padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); gap: 8px; }
+      .container { padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+      .tabs { width: auto; overflow-x: auto; flex-wrap: nowrap; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; margin-bottom: 14px; }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab { white-space: nowrap; scroll-snap-align: start; padding: 8px 14px; font-size: 13px; }
+      .card { padding: 14px; border-radius: 10px; }
+      .grid4 { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .stat-val { font-size: 22px; }
+      .flex-row { flex-wrap: wrap; gap: 6px; }
+      .flex-row .btn { flex: 1 1 auto; min-width: 44%; min-height: 40px; }
+      .btn { min-height: 40px; }
+      #chartSubtabs, #chartRangeChips, #driveRangeChips { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+      #chartSubtabs::-webkit-scrollbar, #chartRangeChips::-webkit-scrollbar, #driveRangeChips::-webkit-scrollbar { display: none; }
+      .chip { white-space: nowrap; }
+      table { font-size: 11.5px; }
+      canvas { max-width: 100%; }
+      input[type="number"], input[type="text"], input[type="password"] { font-size: 16px; } /* iOS zooms below 16px */
+      .row { flex-wrap: wrap; }
+      .row-val { text-align: right; }
+    }
   
 .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
 .switch input { opacity: 0; width: 0; height: 0; }
