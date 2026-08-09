@@ -162,6 +162,19 @@
       input[type="number"], input[type="text"], input[type="password"] { font-size: 16px; } /* iOS zooms below 16px */
       .row { flex-wrap: wrap; }
       .row-val { text-align: right; }
+
+      /* PHONE PASS 2 — these targets carry inline styles, so !important is
+         required to override them at phone width. */
+      #driveMap, #batteryChartWrap { height: 200px !important; }
+      #driveChartsRow { flex-direction: column !important; }
+      #driveChartsRow > div { min-width: 100% !important; }
+      #feedList > div { flex-wrap: wrap !important; row-gap: 2px; }
+      #stateTimeline + div { flex-wrap: wrap; gap: 8px !important; }
+      [id^="vehCtx-"] { overflow-x: auto; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; }
+      [id^="vehCtx-"]::-webkit-scrollbar { display: none; }
+      div[style*="overflow-x"] { -webkit-overflow-scrolling: touch; }
+      #chargeSummary { grid-template-columns: 1fr 1fr !important; }
+      .card-title { font-size: 13px; }
     }
   
 .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
