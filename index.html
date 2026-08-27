@@ -1146,6 +1146,7 @@ function connectTelemetry() {
   };
   
   pbWs.onmessage = (e) => {
+    window.pbWsLastMsg = Date.now(); // liveness stamp for the zombie-socket watchdog
     try {
       const evt = JSON.parse(e.data);
       handleTelemetryEvent(evt);
@@ -3068,9 +3069,22 @@ if (storedCode && Date.now() - storedTs < 30000) {
 // repeated rather than dramatic and rare. connectTelemetry() already guards
 // against double-opening (OPEN/CONNECTING short-circuit), so calling it on
 // a timer is safe.
+// A socket can be dead while readyState still says OPEN — Cloudflare idles out
+// quiet WebSockets (~100s) and the browser never notices, so the old
+// readyState-only check saw "connected" and did nothing while the page silently
+// went stale (charging started; header kept saying Disconnected until reload).
+// The bridge pushes a full state snapshot on every connect, so reconnecting is
+// cheap and self-healing: treat prolonged silence as death.
+const PB_WS_SILENCE_MS = 120000;
 function ensureTelemetryConnected() {
   if (!S.token) return; // need auth token first
-  if (pbWs && (pbWs.readyState === WebSocket.OPEN || pbWs.readyState === WebSocket.CONNECTING)) return;
+  if (pbWs && pbWs.readyState === WebSocket.CONNECTING) return;
+  if (pbWs && pbWs.readyState === WebSocket.OPEN) {
+    const quiet = Date.now() - (window.pbWsLastMsg || 0);
+    if (quiet < PB_WS_SILENCE_MS) return;
+    console.log('[telemetry] no data for', Math.round(quiet/1000) + 's — reconnecting');
+    try { pbWs.close(); } catch(e) {}
+  }
   connectTelemetry();
 }
 
