@@ -101,6 +101,11 @@
     .battery-fill { height: 100%; border-radius: 6px; transition: width .5s; }
     .fill-green { background: var(--green); } .fill-amber { background: #BA7517; } .fill-red { background: var(--red); }
     .batt-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--hint); }
+    .vc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .vc-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 12.5px; font-weight: 500; color: var(--text); white-space: nowrap; }
+    .vc-chip .vc-ico { font-size: 14px; line-height: 1; }
+    .vc-chip .vc-sub { font-size: 10.5px; font-weight: 400; color: var(--hint); }
+    .vc-chip.vc-on { background: var(--green-bg); border-color: transparent; color: var(--green-text); }
     .channel-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); }
     .channel-row:last-child { border-bottom: none; }
     .channel-info { display: flex; align-items: center; gap: 10px; }
@@ -1424,12 +1429,12 @@ function updateVehicleCardFromTelemetry() {
   if ('Odometer' in state) setText('vc-odo', Math.round(state.Odometer).toLocaleString() + ' mi');
   if ('SentryMode' in state) {
     const off = state.SentryMode === 'SentryModeStateOff' || state.SentryMode === 'SentryModeStateIdle';
-    setText('vc-sentry', off ? '❌ Disabled' : '✅ Enabled');
+    setText('vc-sentry', off ? 'Off' : 'On');
+    const sEl = document.getElementById('vc-sentry');
+    const sChip = sEl && sEl.closest('.vc-chip');
+    if (sChip) sChip.classList.toggle('vc-on', !off);
   }
   if ('VehicleSpeed' in state) setText('vc-speed', state.VehicleSpeed > 0 ? state.VehicleSpeed.toFixed(0) + ' mph' : 'Parked');
-  if (state.Location && state.Location.latitude) {
-    setHtml('vc-loc', `<a href="https://maps.google.com/?q=${state.Location.latitude},${state.Location.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a>`);
-  }
   // Charging widget lives inside the header (full-render only), so when any
   // charge-relevant field moves, re-run the full render with the cached state.
   // This makes the widget appear the moment charging starts, tick down as
@@ -1919,6 +1924,15 @@ async function renderStateTimeline() {
 
 // Firmware history card — /firmware/history rows for the selected vehicle,
 // with days-on-version computed between consecutive first_seen stamps.
+// Only the current version shows by default; earlier ones sit behind a toggle.
+let pbFwExpanded = false;
+function fwToggleLabel(n) { return pbFwExpanded ? 'Hide earlier versions ▴' : `Show ${n} earlier version${n === 1 ? '' : 's'} ▾`; }
+function toggleFirmwareHistory() {
+  pbFwExpanded = !pbFwExpanded;
+  const more = document.getElementById('fwMore'), btn = document.getElementById('fwToggle');
+  if (more) more.style.display = pbFwExpanded ? 'block' : 'none';
+  if (btn) btn.textContent = fwToggleLabel(Number(btn.dataset.n) || 0);
+}
 async function loadFirmwareHistory() {
   const el = document.getElementById('firmwareHistory');
   if (!el) return;
@@ -1928,14 +1942,20 @@ async function loadFirmwareHistory() {
     const r = await fetch(`${BRIDGE_BASE}/firmware/history?secret=${secret}&vin=${S.vehicleVin}`);
     const rows = (await r.json()).history || [];
     if (!rows.length) { el.innerHTML = '<div class="empty">No firmware history yet.</div>'; return; }
-    el.innerHTML = rows.map((f, i) => {
+    const rowHtml = (f, i) => {
       const when = new Date(f.first_seen_ts*1000).toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'});
       const until = i > 0 ? rows[i-1].first_seen_ts : Math.floor(Date.now()/1000);
       const days = Math.max(1, Math.round((until - f.first_seen_ts)/86400));
       return `<div style="display:flex; justify-content:space-between; padding:6px 4px; border-bottom:1px solid var(--border); font-size:13px;">
         <span style="font-weight:${i===0?'600':'400'};">${f.version}${i===0?' <span style="font-size:10px; color:#2f9e44;">current</span>':''}</span>
         <span style="color:var(--text-soft);">${when} · ${days}d</span></div>`;
-    }).join('');
+    };
+    const older = rows.slice(1).map((f, j) => rowHtml(f, j + 1)).join('');
+    const n = rows.length - 1;
+    el.innerHTML = rowHtml(rows[0], 0) + (n > 0
+      ? `<div id="fwMore" style="display:${pbFwExpanded ? 'block' : 'none'};">${older}</div>
+         <button id="fwToggle" data-n="${n}" onclick="toggleFirmwareHistory()" style="background:none; border:none; color:var(--blue); font-size:12px; cursor:pointer; padding:8px 4px 0;">${fwToggleLabel(n)}</button>`
+      : '');
   } catch(e) { el.innerHTML = '<div class="empty">Unavailable.</div>'; }
 }
 
@@ -1996,27 +2016,26 @@ async function loadVehicleCard() {
     const bc = batt >= 50 ? 'fill-green' : batt >= 25 ? 'fill-amber' : 'fill-red';
     const fT = c => Math.round(c * 9/5 + 32) + '°F';
     el.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border);">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border);">
         <div style="width:60px;height:40px;display:flex;align-items:center;justify-content:center;">${vehicleImg(S.vehicles.find(x => x.id === S.vehicleId) || {vin: S.vehicleVin})}</div>
         <div>
           <div style="font-size:17px;font-weight:600;">${S.vehicleName}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px;"><span class="${d.state==='online'?'dot-on':'dot-off'}"></span>${d.state} · ${vs.locked?'Locked':'⚠ Unlocked'} · VIN: ${d.vin||'—'}</div>
         </div>
       </div>
-      <div class="card-title">Battery</div>
       <div style="font-size:24px;font-weight:600;"><span id="vc-batt">${batt}</span>% <span style="font-size:14px;font-weight:400;color:var(--muted);"><span id="vc-range">${Math.round(cs.battery_range)}</span> mi range</span></div>
       <div class="battery-track"><div id="vc-battfill" class="battery-fill ${bc}" style="width:${batt}%"></div></div>
       <div class="batt-labels"><span>0%</span><span>Charge limit: <span id="vc-limit">${cs.charge_limit_soc}</span>%</span><span>100%</span></div>
-      <div style="margin-top:16px;" class="card-title">Details</div>
-      <div class="row"><span class="row-label">Charging status</span><span class="row-val" id="vc-charge">${cs.charging_state}</span></div>
-      <div class="row"><span class="row-label">Inside temp</span><span class="row-val" id="vc-inside">${fT(cl.inside_temp)}</span></div>
-      <div class="row"><span class="row-label">Outside temp</span><span class="row-val" id="vc-outside">${fT(cl.outside_temp)}</span></div>
-      <div class="row"><span class="row-label">Climate</span><span class="row-val">${cl.is_climate_on?'On':'Off'} (set ${fT(cl.driver_temp_setting)})</span></div>
-      <div class="row"><span class="row-label">Odometer</span><span class="row-val" id="vc-odo">${Math.round(vs.odometer).toLocaleString()} mi</span></div>
-      <div class="row"><span class="row-label">Sentry mode</span><span class="row-val" id="vc-sentry">${vs.sentry_mode?'✅ Enabled':'❌ Disabled'}</span></div>
-      <div class="row"><span class="row-label">Speed</span><span class="row-val" id="vc-speed">${ds.speed?ds.speed+' mph':'Parked'}</span></div>
-      <div class="row"><span class="row-label">Location</span><span class="row-val" id="vc-loc"><a href="https://maps.google.com/?q=${ds.latitude},${ds.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a></span></div>
-      <div class="row"><span class="row-label">Software</span><span class="row-val">${vs.car_version||'—'}</span></div>
+      <div class="vc-chips">
+        <span class="vc-chip" title="Charging status"><span class="vc-ico">${cs.charging_state==='Charging'?'⚡':'🔌'}</span><span id="vc-charge">${cs.charging_state}</span></span>
+        <span class="vc-chip" title="Inside temp"><span class="vc-ico">🌡️</span><span id="vc-inside">${fT(cl.inside_temp)}</span><span class="vc-sub">in</span></span>
+        <span class="vc-chip" title="Outside temp"><span class="vc-ico">☀️</span><span id="vc-outside">${fT(cl.outside_temp)}</span><span class="vc-sub">out</span></span>
+        <span class="vc-chip" title="Climate"><span class="vc-ico">🌀</span><span>${cl.is_climate_on?'On':'Off'} · ${fT(cl.driver_temp_setting)}</span></span>
+        <span class="vc-chip" title="Odometer"><span class="vc-ico">🛣️</span><span id="vc-odo">${Math.round(vs.odometer).toLocaleString()} mi</span></span>
+        <span class="vc-chip${vs.sentry_mode?' vc-on':''}" title="Sentry mode"><span class="vc-ico">🛡️</span><span id="vc-sentry">${vs.sentry_mode?'On':'Off'}</span></span>
+        <span class="vc-chip" title="Speed"><span class="vc-ico">🚗</span><span id="vc-speed">${ds.speed?ds.speed+' mph':'Parked'}</span></span>
+        <span class="vc-chip" title="Software version"><span class="vc-ico">⚙️</span><span>${vs.car_version||'—'}</span></span>
+      </div>
     `;
   } catch(e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
 }
@@ -2033,9 +2052,6 @@ function renderVehicleCardFromTelemetry(t) {
   const chargeState = t.DetailedChargeState ? String(t.DetailedChargeState).replace('DetailedChargeState','') : '—';
   const climateOn = t.HvacACEnabled === true || t.CabinOverheatProtectionMode === 'CabinOverheatProtectionModeStateOn';
   const speed = (typeof t.VehicleSpeed === 'number' && t.VehicleSpeed > 0) ? `${Math.round(t.VehicleSpeed)} mph` : 'Parked';
-  const loc = (t.Location && t.Location.latitude)
-    ? `<a href="https://maps.google.com/?q=${t.Location.latitude},${t.Location.longitude}" target="_blank" style="color:var(--blue);">View on map ↗</a>`
-    : '—';
   // Charging widget (header, right side): renders only while actively charging.
   // All values come from the live telemetry cache, so this updates in real time.
   //   ⚡ power = ChargeAmps × ChargerVoltage (AC path; DC fast charging shows a
@@ -2066,7 +2082,7 @@ function renderVehicleCardFromTelemetry(t) {
       </div>`;
   }
   el.innerHTML = `
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border);">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border);">
       <div style="width:60px;height:40px;display:flex;align-items:center;justify-content:center;">${vehicleImg(S.vehicles.find(x => x.id === S.vehicleId) || {vin: S.vehicleVin})}</div>
       <div>
         <div style="font-size:17px;font-weight:600;">${S.vehicleName}</div>
@@ -2074,19 +2090,18 @@ function renderVehicleCardFromTelemetry(t) {
       </div>
       ${chargeWidget}
     </div>
-    <div class="card-title">Battery</div>
     <div style="font-size:24px;font-weight:600;"><span id="vc-batt">${batt}</span>% <span style="font-size:14px;font-weight:400;color:var(--muted);"><span id="vc-range">${t.RatedRange?Math.round(t.RatedRange):'—'}</span> mi range</span></div>
     <div class="battery-track"><div id="vc-battfill" class="battery-fill ${bc}" style="width:${batt}%"></div></div>
     <div class="batt-labels"><span>0%</span><span>Charge limit: <span id="vc-limit">${t.ChargeLimitSoc?Math.round(t.ChargeLimitSoc):'—'}</span>%</span><span>100%</span></div>
-    <div style="margin-top:16px;" class="card-title">Details</div>
-    <div class="row"><span class="row-label">Charging status</span><span class="row-val" id="vc-charge">${chargeState}</span></div>
-    <div class="row"><span class="row-label">Inside temp</span><span class="row-val" id="vc-inside">${fT(t.InsideTemp)}</span></div>
-    <div class="row"><span class="row-label">Outside temp</span><span class="row-val" id="vc-outside">${fT(t.OutsideTemp)}</span></div>
-    <div class="row"><span class="row-label">Odometer</span><span class="row-val" id="vc-odo">${t.Odometer?Math.round(t.Odometer).toLocaleString()+' mi':'—'}</span></div>
-    <div class="row"><span class="row-label">Sentry mode</span><span class="row-val" id="vc-sentry">${sentryOn?'✅ Enabled':'❌ Disabled'}</span></div>
-    <div class="row"><span class="row-label">Speed</span><span class="row-val" id="vc-speed">${speed}</span></div>
-    <div class="row"><span class="row-label">Location</span><span class="row-val" id="vc-loc">${loc}</span></div>
-    <div class="row"><span class="row-label">Software</span><span class="row-val">${t.Version||'—'}</span></div>
+    <div class="vc-chips">
+      <span class="vc-chip" title="Charging status"><span class="vc-ico">${chargeState==='Charging'?'⚡':'🔌'}</span><span id="vc-charge">${chargeState}</span></span>
+      <span class="vc-chip" title="Inside temp"><span class="vc-ico">🌡️</span><span id="vc-inside">${fT(t.InsideTemp)}</span><span class="vc-sub">in</span></span>
+      <span class="vc-chip" title="Outside temp"><span class="vc-ico">☀️</span><span id="vc-outside">${fT(t.OutsideTemp)}</span><span class="vc-sub">out</span></span>
+      <span class="vc-chip" title="Odometer"><span class="vc-ico">🛣️</span><span id="vc-odo">${t.Odometer?Math.round(t.Odometer).toLocaleString()+' mi':'—'}</span></span>
+      <span class="vc-chip${sentryOn?' vc-on':''}" title="Sentry mode"><span class="vc-ico">🛡️</span><span id="vc-sentry">${sentryOn?'On':'Off'}</span></span>
+      <span class="vc-chip" title="Speed"><span class="vc-ico">🚗</span><span id="vc-speed">${speed}</span></span>
+      <span class="vc-chip" title="Software version"><span class="vc-ico">⚙️</span><span>${t.Version||'—'}</span></span>
+    </div>
   `;
 }
 
