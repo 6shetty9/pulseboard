@@ -383,6 +383,10 @@ input:checked + .slider:before { transform: translateX(20px); }
           <button class="chip" onclick="setBatteryRange(90,this)">90d</button>
           <button class="chip" onclick="setBatteryRange(365,this)">1y</button>
           <button class="chip" onclick="setBatteryRange(1095,this)">All</button>
+          <span style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+            <span id="batteryZoomHint" style="font-size:11.5px; color:var(--text-soft);">Drag across the chart to zoom</span>
+            <button class="chip" id="batteryZoomReset" style="display:none;" onclick="resetBatteryZoom()">↺ Reset zoom</button>
+          </span>
         </div>
         <div id="batteryChartWrap" style="position: relative; height: 280px;">
           <canvas id="batteryChart"></canvas>
@@ -5278,6 +5282,115 @@ function renderEffScatter(datasets, multi) {
   });
 }
 
+// ---- Battery chart: drag A→B to zoom, Reset to restore -----------------------
+// Custom pointer handler (no zoom plugin). Drag across the plot to select a time
+// span; the x-axis zooms to it, the y-axis refits to the data inside it, and the
+// notes line reports the selection. Double-click or "Reset zoom" restores.
+// touch-action:pan-y keeps vertical page scrolling working on iPad.
+let batteryNotesBase = '';
+const batteryDragPlugin = {
+  id: 'batteryDragSelect',
+  afterDraw(chart) {
+    const dz = chart._dz;
+    if (!dz || !dz.active) return;
+    const a = chart.chartArea, ctx = chart.ctx;
+    const x0 = Math.min(dz.x0, dz.x1), x1 = Math.max(dz.x0, dz.x1);
+    ctx.save();
+    ctx.fillStyle = 'rgba(37,99,235,0.12)';
+    ctx.strokeStyle = 'rgba(37,99,235,0.65)';
+    ctx.lineWidth = 1;
+    ctx.fillRect(x0, a.top, x1 - x0, a.bottom - a.top);
+    ctx.strokeRect(x0 + 0.5, a.top + 0.5, Math.max(0, x1 - x0 - 1), a.bottom - a.top - 1);
+    ctx.restore();
+  }
+};
+function setBatteryZoomUi(zoomed) {
+  const hint = document.getElementById('batteryZoomHint'), btn = document.getElementById('batteryZoomReset');
+  if (hint) hint.style.display = zoomed ? 'none' : '';
+  if (btn) btn.style.display = zoomed ? '' : 'none';
+}
+function batteryTimeUnit(spanMs) {
+  const day = 86400000;
+  return spanMs <= 2 * day ? 'hour' : spanMs <= 21 * day ? 'day' : spanMs <= 90 * day ? 'week' : 'month';
+}
+function applyBatteryZoom(chart, d, tmin, tmax) {
+  const sel = d.samples.filter(p => p.ts * 1000 >= tmin && p.ts * 1000 <= tmax);
+  const daily = d.daily.filter(p => { const ms = Date.parse(p.date + 'T12:00:00Z'); return ms >= tmin && ms <= tmax; });
+  const fmtOpts = (tmax - tmin) <= 2 * 86400000 ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric' };
+  const fmt = ms => new Date(ms).toLocaleString([], fmtOpts);
+  const notesEl = document.getElementById('batteryNotes');
+  if (!sel.length && !daily.length) {
+    if (notesEl) notesEl.textContent = `Selected ${fmt(tmin)} – ${fmt(tmax)} · no samples in this span`;
+    chart.draw();
+    return;
+  }
+  const sc = chart.options.scales;
+  sc.x.min = tmin; sc.x.max = tmax;
+  sc.x.time.unit = batteryTimeUnit(tmax - tmin);
+  const vals = sel.map(p => p.normalized_range).concat(daily.map(p => p.median_range));
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = Math.max(0.5, (hi - lo) * 0.25);
+  sc.y.min = Math.floor((lo - pad) * 2) / 2;
+  sc.y.max = Math.ceil((hi + pad) * 2) / 2;
+  chart.update();
+  setBatteryZoomUi(true);
+  let med = 'no daily medians in span';
+  if (daily.length >= 2) {
+    const a = daily[0].median_range, b = daily[daily.length - 1].median_range, dl = b - a;
+    med = `daily median ${a.toFixed(1)} → ${b.toFixed(1)} mi (${dl > 0 ? '+' : ''}${dl.toFixed(1)})`;
+  } else if (daily.length === 1) {
+    med = `daily median ${daily[0].median_range.toFixed(1)} mi`;
+  }
+  if (notesEl) notesEl.textContent = `Selected ${fmt(tmin)} – ${fmt(tmax)} · ${sel.length} sample${sel.length === 1 ? '' : 's'} · ${med}`;
+}
+function resetBatteryZoom() {
+  const chart = batteryChart;
+  if (!chart || !chart._dzOrig) return;
+  const o = chart._dzOrig, sc = chart.options.scales;
+  sc.x.min = undefined; sc.x.max = undefined;
+  sc.x.time.unit = o.unit;
+  sc.y.min = o.yMin; sc.y.max = o.yMax;
+  chart.update();
+  setBatteryZoomUi(false);
+  const notesEl = document.getElementById('batteryNotes');
+  if (notesEl) notesEl.textContent = batteryNotesBase;
+}
+function attachBatteryDragZoom(chart, d, orig) {
+  const cv = chart.canvas;
+  chart._dz = { active: false, x0: 0, x1: 0 };
+  chart._dzOrig = orig;
+  cv.style.touchAction = 'pan-y';
+  cv.style.cursor = 'crosshair';
+  setBatteryZoomUi(false);
+  const pos = e => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const clampX = x => Math.max(chart.chartArea.left, Math.min(chart.chartArea.right, x));
+  cv.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const a = chart.chartArea, p = pos(e);
+    if (p.x < a.left || p.x > a.right || p.y < a.top || p.y > a.bottom) return;
+    chart._dz = { active: true, x0: p.x, x1: p.x };
+    try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!chart._dz.active) return;
+    chart._dz.x1 = clampX(pos(e).x);
+    chart.draw();
+  });
+  const finish = (e, commit) => {
+    const dz = chart._dz;
+    if (!dz.active) return;
+    dz.active = false;
+    try { cv.releasePointerCapture(e.pointerId); } catch (_) {}
+    const xa = chart.scales.x;
+    const px0 = Math.min(dz.x0, dz.x1), px1 = Math.max(dz.x0, dz.x1);
+    if (commit && px1 - px0 >= 8) applyBatteryZoom(chart, d, xa.getValueForPixel(px0), xa.getValueForPixel(px1));
+    else chart.draw();
+  };
+  cv.addEventListener('pointerup', e => finish(e, true));
+  cv.addEventListener('pointercancel', e => finish(e, false));
+  cv.addEventListener('dblclick', () => resetBatteryZoom());
+}
+
 function setBatteryRange(days, el) {
   batteryRangeDays = days;
   document.querySelectorAll('#batteryRangeChips .chip').forEach(c => c.classList.remove('chip-active'));
@@ -5299,6 +5412,7 @@ async function loadBatteryHealth() {
   wrap.style.display = 'none';
   summaryEl.style.display = 'none';
   if (notesEl) notesEl.textContent = '';
+  setBatteryZoomUi(false);
 
   try {
     const r = await fetch(`${BRIDGE_BASE}/battery/health?secret=${secret}&vin=${S.vehicleVin}&days=${batteryRangeDays}`);
@@ -5327,6 +5441,7 @@ async function loadBatteryHealth() {
     // Notes
     if (notesEl) {
       notesEl.textContent = `${d.samples.length} samples after filtering · ${d.daily.length} day${d.daily.length===1?'':'s'} with data · window: last ${d.days} days`;
+      batteryNotesBase = notesEl.textContent;
     }
 
     // Chart
@@ -5352,6 +5467,7 @@ async function loadBatteryHealth() {
     if (batteryChart) batteryChart.destroy();
     batteryChart = new Chart(ctx, {
       type: 'line',
+      plugins: [batteryDragPlugin],
       data: {
         datasets: [
           {
@@ -5388,6 +5504,7 @@ async function loadBatteryHealth() {
         plugins: {
           legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
           tooltip: {
+            enabled: (ctx) => !(ctx.chart._dz && ctx.chart._dz.active),
             callbacks: {
               label: (ctx) => {
                 if (ctx.dataset.label === 'Samples') {
@@ -5401,6 +5518,7 @@ async function loadBatteryHealth() {
         }
       }
     });
+    attachBatteryDragZoom(batteryChart, d, { yMin, yMax, unit: batteryRangeDays <= 30 ? 'day' : (batteryRangeDays <= 90 ? 'week' : 'month') });
   } catch(e) {
     console.log('battery health load failed:', e);
     empty.style.display = 'block';
