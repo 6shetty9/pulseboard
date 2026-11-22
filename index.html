@@ -442,6 +442,13 @@ input:checked + .slider:before { transform: translateX(20px); }
           <div id="effScatterEmpty" style="text-align:center; color: var(--text-soft); font-size: 13px; padding: 70px 0; display:none;">Loading…</div>
         </div>
         <div class="card">
+          <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span>🛣️ Efficiency by distance</span>
+            <span style="font-size:11.5px; color:var(--text-soft); font-weight:400; text-transform:none; letter-spacing:0;">Drag across the chart to zoom</span>
+          </div>
+          <div id="effDistBody"><div class="empty">Loading…</div></div>
+        </div>
+        <div class="card">
           <div class="card-title">🌡 Temperature → efficiency</div>
           <div id="effBuckets" style="font-size: 13px;"></div>
         </div>
@@ -5140,6 +5147,7 @@ async function loadEfficiency() {
   const secret = localStorage.getItem('pb_proxy_secret');
   if (!secret) return;
   const vins = chartSelectedVins();
+  renderEffDistance(vins); // independent of the /efficiency fetch below
   const summaryEl = document.getElementById('effSummary');
   const bucketsEl = document.getElementById('effBuckets');
   const drivesEl = document.getElementById('effDrives');
@@ -5282,14 +5290,190 @@ function renderEffScatter(datasets, multi) {
   });
 }
 
+// ---- Efficiency by distance (x = odometer) ---------------------------------
+// One chart per selected car, built from /sessions/driving (start/end odometer,
+// Wh/mi and % of rated per drive). Dots = drives (placed at their mid-odometer,
+// sized by length, colored like the scatter above); blue line = distance-weighted
+// rolling average. Drag A→B to zoom: the notes line then reports the true
+// distance-weighted average over exactly that stretch (partial drives at the
+// edges are prorated by the miles that fall inside).
+let effDistCharts = {};
+let effDistToken = 0;
+function effPctColor(p, a) { return p >= 100 ? `rgba(63,185,80,${a})` : p >= 90 ? `rgba(227,160,8,${a})` : `rgba(226,75,74,${a})`; }
+function effDistPrep(sessions, cutoff) {
+  const drives = [];
+  let skipped = 0;
+  for (const s of sessions) {
+    if (!(s.start_ts >= cutoff)) continue;
+    const dist = s.distance_mi || 0, wh = s.efficiency_wh_per_mi || 0, pct = s.efficiency_vs_rated || 0;
+    if (!(dist > 0) || !(s.energy_used_kwh > 0) || !(wh > 0) || !(pct > 0) || pct > 250) continue;
+    const so = s.start_odometer || 0;
+    if (!(so > 0)) { skipped++; continue; }
+    let eo = s.end_odometer || 0;
+    if (!(eo > so)) eo = so + dist;
+    drives.push({ ts: s.start_ts, s: so, e: eo, mid: (so + eo) / 2, dist, wh, pct });
+  }
+  drives.sort((a, b) => a.mid - b.mid);
+  return { drives, skipped };
+}
+// The rated Wh/mi baseline is implied by each drive (wh * pct / 100); take the median.
+function effRated(drives) {
+  const v = drives.map(d => d.wh * d.pct / 100).sort((a, b) => a - b);
+  return v.length ? v[Math.floor(v.length / 2)] : 0;
+}
+// Distance-weighted Wh/mi over odometer span [A,B]; partial drives prorated by overlap.
+function effWindow(drives, A, B) {
+  let mi = 0, whmi = 0, n = 0;
+  for (const d of drives) {
+    const ov = Math.min(d.e, B) - Math.max(d.s, A);
+    if (ov > 0) { mi += ov; whmi += d.wh * ov; n++; }
+  }
+  return { mi, n, wh: mi > 0 ? whmi / mi : 0 };
+}
+function effRolling(drives, rated, h) {
+  const out = [];
+  for (let i = 0; i < drives.length; i++) {
+    let w = 0, acc = 0;
+    for (let j = i; j >= 0 && drives[i].mid - drives[j].mid <= h; j--) { w += drives[j].dist; acc += drives[j].wh * drives[j].dist; }
+    for (let j = i + 1; j < drives.length && drives[j].mid - drives[i].mid <= h; j++) { w += drives[j].dist; acc += drives[j].wh * drives[j].dist; }
+    out.push({ x: drives[i].mid, y: rated / (acc / w) * 100 });
+  }
+  return out;
+}
+const effFmtMi = v => Math.round(v).toLocaleString();
+function effSummaryText(m, w, prefix) {
+  const mi = w.mi < 10 ? w.mi.toFixed(1) : Math.round(w.mi).toLocaleString();
+  return `${prefix} · ${mi} mi · ${w.n} drive${w.n === 1 ? '' : 's'} · ${w.wh.toFixed(0)} Wh/mi · ${(m.rated / w.wh * 100).toFixed(0)}% of rated`;
+}
+async function renderEffDistance(vins) {
+  const body = document.getElementById('effDistBody');
+  if (!body) return;
+  const token = ++effDistToken;
+  Object.values(effDistCharts).forEach(c => { try { c.destroy(); } catch (e) {} });
+  effDistCharts = {};
+  const secret = localStorage.getItem('pb_proxy_secret');
+  if (!secret || !vins.length) { body.innerHTML = '<div class="empty">No vehicle selected.</div>'; return; }
+  body.innerHTML = '<div class="empty"><span class="spinner"></span> Loading…</div>';
+  const cutoff = Math.floor(Date.now() / 1000) - chartRangeDays * 86400;
+  let results;
+  try {
+    results = await Promise.all(vins.map(async vin => {
+      const r = await fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${vin}&limit=2000`);
+      const d = await r.json();
+      return { vin, prep: effDistPrep(d.sessions || [], cutoff) };
+    }));
+  } catch (e) {
+    if (token === effDistToken) body.innerHTML = '<div class="empty">Could not load drive data.</div>';
+    return;
+  }
+  if (token !== effDistToken) return;
+  const multi = results.length > 1;
+  body.innerHTML = results.map(r => {
+    const k = r.vin.slice(-6), cc = carColor(r.vin);
+    const ok = r.prep.drives.length >= 2;
+    return `<div style="margin-bottom:${multi ? '20px' : '0'};">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; min-height:28px;">
+        <span style="font-size:12px; font-weight:600; color:${cc.solid};">${multi ? cc.name : ''}</span>
+        <button class="chip" id="effDistReset_${k}" style="display:none;" onclick="resetEffDist('${k}')">↺ Reset zoom</button>
+      </div>
+      ${ok ? `<div style="position:relative; height:240px;"><canvas id="effDistCanvas_${k}"></canvas></div>
+        <div id="effDistNotes_${k}" style="margin-top:8px; font-size:12px; color:var(--text-soft); line-height:1.6;"></div>`
+        : '<div class="empty">Not enough drives with odometer data in this range.</div>'}
+    </div>`;
+  }).join('');
+  results.forEach(r => { if (r.prep.drives.length >= 2) buildEffDistChart(r.vin, r.prep); });
+}
+function buildEffDistChart(vin, prep) {
+  const k = vin.slice(-6), drives = prep.drives, rated = effRated(drives);
+  const lo = drives[0].s, hi = drives[drives.length - 1].e;
+  const roll = effRolling(drives, rated, Math.max(15, (hi - lo) / 40));
+  const dotColor = drives.map(d => effPctColor(d.pct, 0.8));
+  const chart = new Chart(document.getElementById('effDistCanvas_' + k).getContext('2d'), {
+    type: 'line',
+    plugins: [dragSelectPlugin],
+    data: {
+      datasets: [
+        { label: 'Drives', data: drives.map(d => ({ x: d.mid, y: d.pct })), showLine: false,
+          pointRadius: drives.map(d => Math.max(3, Math.min(8, 2.5 + Math.sqrt(d.dist)))), pointHoverRadius: 9,
+          pointBackgroundColor: dotColor, pointBorderColor: dotColor, order: 2 },
+        { label: 'Rolling avg', data: roll, borderColor: '#2563eb', borderWidth: 2, pointRadius: 0, tension: 0.25, order: 1 },
+        { label: 'Rated (100%)', data: [{ x: lo, y: 100 }, { x: hi, y: 100 }], borderColor: 'rgba(120,120,120,.55)', borderDash: [6, 4], borderWidth: 1, pointRadius: 0, order: 3 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: true },
+      scales: {
+        x: { type: 'linear', title: { display: true, text: 'Odometer (mi)' }, ticks: { maxTicksLimit: 8, callback: v => Number(v).toLocaleString() }, grid: { color: 'rgba(128,128,128,.12)' } },
+        y: { title: { display: true, text: 'Efficiency (% of rated)' }, grid: { color: 'rgba(128,128,128,.12)' }, suggestedMin: 40, suggestedMax: 140 }
+      },
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          enabled: (ctx) => !(ctx.chart._dz && ctx.chart._dz.active),
+          filter: (item) => item.dataset.label !== 'Rated (100%)',
+          callbacks: {
+            title: (items) => `Odometer ${effFmtMi(items[0].parsed.x)} mi`,
+            label: (c) => {
+              if (c.dataset.label === 'Drives') {
+                const d = drives[c.dataIndex];
+                const when = new Date(d.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+                return `${when} · ${d.dist.toFixed(1)} mi · ${d.wh.toFixed(0)} Wh/mi · ${d.pct.toFixed(0)}%`;
+              }
+              return `Rolling avg: ${c.parsed.y.toFixed(0)}%`;
+            }
+          }
+        }
+      }
+    }
+  });
+  const m = { k, drives, rated, lo, hi, base: '' };
+  m.base = effSummaryText(m, effWindow(drives, lo, hi), `${effFmtMi(lo)} → ${effFmtMi(hi)} mi`)
+         + (prep.skipped ? ` · ${prep.skipped} drive${prep.skipped === 1 ? '' : 's'} without odometer skipped` : '');
+  chart._eff = m;
+  effDistCharts[k] = chart;
+  document.getElementById('effDistNotes_' + k).textContent = m.base;
+  attachDragSelect(chart, (a, b) => applyEffDistZoom(chart, a, b), () => resetEffDist(k));
+}
+function applyEffDistZoom(chart, A, B) {
+  const m = chart._eff, notesEl = document.getElementById('effDistNotes_' + m.k);
+  const w = effWindow(m.drives, A, B);
+  if (!w.n) {
+    if (notesEl) notesEl.textContent = `Selected ${effFmtMi(A)} → ${effFmtMi(B)} mi · no drives in this span`;
+    chart.draw();
+    return;
+  }
+  const sc = chart.options.scales;
+  sc.x.min = A; sc.x.max = B;
+  const ys = m.drives.filter(d => d.e > A && d.s < B).map(d => d.pct)
+    .concat(chart.data.datasets[1].data.filter(p => p.x >= A && p.x <= B).map(p => p.y));
+  const ylo = Math.min(...ys), yhi = Math.max(...ys), pad = Math.max(5, (yhi - ylo) * 0.25);
+  sc.y.min = Math.floor(ylo - pad); sc.y.max = Math.ceil(yhi + pad);
+  chart.update();
+  const btn = document.getElementById('effDistReset_' + m.k);
+  if (btn) btn.style.display = '';
+  if (notesEl) notesEl.textContent = effSummaryText(m, w, `Selected ${effFmtMi(A)} → ${effFmtMi(B)} mi`);
+}
+function resetEffDist(k) {
+  const chart = effDistCharts[k];
+  if (!chart) return;
+  const sc = chart.options.scales;
+  sc.x.min = undefined; sc.x.max = undefined; sc.y.min = undefined; sc.y.max = undefined;
+  chart.update();
+  const btn = document.getElementById('effDistReset_' + k);
+  if (btn) btn.style.display = 'none';
+  const notesEl = document.getElementById('effDistNotes_' + k);
+  if (notesEl) notesEl.textContent = chart._eff.base;
+}
+
 // ---- Battery chart: drag A→B to zoom, Reset to restore -----------------------
 // Custom pointer handler (no zoom plugin). Drag across the plot to select a time
 // span; the x-axis zooms to it, the y-axis refits to the data inside it, and the
 // notes line reports the selection. Double-click or "Reset zoom" restores.
 // touch-action:pan-y keeps vertical page scrolling working on iPad.
 let batteryNotesBase = '';
-const batteryDragPlugin = {
-  id: 'batteryDragSelect',
+const dragSelectPlugin = {
+  id: 'dragSelect',
   afterDraw(chart) {
     const dz = chart._dz;
     if (!dz || !dz.active) return;
@@ -5355,13 +5539,14 @@ function resetBatteryZoom() {
   const notesEl = document.getElementById('batteryNotes');
   if (notesEl) notesEl.textContent = batteryNotesBase;
 }
-function attachBatteryDragZoom(chart, d, orig) {
+// Generic drag-select on a chart's x axis (needs dragSelectPlugin on the chart).
+// onSelect(xMin, xMax) fires on release when the drag is >= 8px; onReset() on
+// double-click. touch-action:pan-y keeps vertical page scrolling working on iPad.
+function attachDragSelect(chart, onSelect, onReset) {
   const cv = chart.canvas;
   chart._dz = { active: false, x0: 0, x1: 0 };
-  chart._dzOrig = orig;
   cv.style.touchAction = 'pan-y';
   cv.style.cursor = 'crosshair';
-  setBatteryZoomUi(false);
   const pos = e => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   const clampX = x => Math.max(chart.chartArea.left, Math.min(chart.chartArea.right, x));
   cv.addEventListener('pointerdown', e => {
@@ -5383,12 +5568,17 @@ function attachBatteryDragZoom(chart, d, orig) {
     try { cv.releasePointerCapture(e.pointerId); } catch (_) {}
     const xa = chart.scales.x;
     const px0 = Math.min(dz.x0, dz.x1), px1 = Math.max(dz.x0, dz.x1);
-    if (commit && px1 - px0 >= 8) applyBatteryZoom(chart, d, xa.getValueForPixel(px0), xa.getValueForPixel(px1));
+    if (commit && px1 - px0 >= 8) onSelect(xa.getValueForPixel(px0), xa.getValueForPixel(px1));
     else chart.draw();
   };
   cv.addEventListener('pointerup', e => finish(e, true));
   cv.addEventListener('pointercancel', e => finish(e, false));
-  cv.addEventListener('dblclick', () => resetBatteryZoom());
+  cv.addEventListener('dblclick', () => onReset());
+}
+function attachBatteryDragZoom(chart, d, orig) {
+  chart._dzOrig = orig;
+  setBatteryZoomUi(false);
+  attachDragSelect(chart, (lo, hi) => applyBatteryZoom(chart, d, lo, hi), resetBatteryZoom);
 }
 
 function setBatteryRange(days, el) {
@@ -5467,7 +5657,7 @@ async function loadBatteryHealth() {
     if (batteryChart) batteryChart.destroy();
     batteryChart = new Chart(ctx, {
       type: 'line',
-      plugins: [batteryDragPlugin],
+      plugins: [dragSelectPlugin],
       data: {
         datasets: [
           {
