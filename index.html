@@ -444,7 +444,7 @@ input:checked + .slider:before { transform: translateX(20px); }
         <div class="card">
           <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
             <span>🛣️ Efficiency by distance</span>
-            <span style="font-size:11.5px; color:var(--text-soft); font-weight:400; text-transform:none; letter-spacing:0;">Drag across the chart to zoom</span>
+            <span style="font-size:11.5px; color:var(--text-soft); font-weight:400; text-transform:none; letter-spacing:0;">Drag across the chart to zoom · blue = FSD</span>
           </div>
           <div id="effDistBody"><div class="empty">Loading…</div></div>
         </div>
@@ -5300,7 +5300,7 @@ function renderEffScatter(datasets, multi) {
 let effDistCharts = {};
 let effDistToken = 0;
 function effPctColor(p, a) { return p >= 100 ? `rgba(63,185,80,${a})` : p >= 90 ? `rgba(227,160,8,${a})` : `rgba(226,75,74,${a})`; }
-function effDistPrep(sessions, cutoff) {
+function effDistPrep(sessions, cutoff, fsdByStart) {
   const drives = [];
   let skipped = 0;
   for (const s of sessions) {
@@ -5311,7 +5311,10 @@ function effDistPrep(sessions, cutoff) {
     if (!(so > 0)) { skipped++; continue; }
     let eo = s.end_odometer || 0;
     if (!(eo > so)) eo = so + dist;
-    drives.push({ ts: s.start_ts, s: so, e: eo, mid: (so + eo) / 2, dist, wh, pct });
+    // FSD share of the drive (0..1) from /drives/fsd; null = unknown (never "manual").
+    const fm = fsdByStart ? fsdByStart[s.start_ts] : null;
+    const fsd = (fm == null) ? null : Math.max(0, Math.min(1, fm / dist));
+    drives.push({ ts: s.start_ts, s: so, e: eo, mid: (so + eo) / 2, dist, wh, pct, fsd });
   }
   drives.sort((a, b) => a.mid - b.mid);
   return { drives, skipped };
@@ -5341,6 +5344,58 @@ function effRolling(drives, rated, h) {
   return out;
 }
 const effFmtMi = v => Math.round(v).toLocaleString();
+// Blue band behind each drive's odometer stretch, opacity by its FSD share.
+// Drives with unknown FSD data (before the counters existed) are never shaded.
+const effFsdShadePlugin = {
+  id: 'effFsdShade',
+  beforeDatasetsDraw(chart) {
+    const m = chart._eff;
+    if (!m || !m.hasFsd) return;
+    const xa = chart.scales.x, a = chart.chartArea, ctx = chart.ctx;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(a.left, a.top, a.right - a.left, a.bottom - a.top);
+    ctx.clip();
+    for (const d of m.drives) {
+      if (d.fsd == null || d.fsd < 0.05) continue;
+      const x0 = xa.getPixelForValue(d.s), x1 = xa.getPixelForValue(d.e);
+      if (x1 < a.left || x0 > a.right) continue;
+      ctx.fillStyle = `rgba(37,99,235,${0.10 + 0.28 * d.fsd})`;
+      ctx.fillRect(x0, a.top, Math.max(2, x1 - x0), a.bottom - a.top);
+    }
+    ctx.restore();
+  }
+};
+// Distance-weighted Wh/mi over [A,B] for the drives passing `test`.
+function effGroupStats(m, A, B, test) {
+  let mi = 0, wmi = 0, n = 0;
+  for (const d of m.drives) {
+    if (!test(d)) continue;
+    const ov = Math.min(d.e, B) - Math.max(d.s, A);
+    if (ov > 0) { mi += ov; wmi += d.wh * ov; n++; }
+  }
+  return { mi, n, wh: mi > 0 ? wmi / mi : 0 };
+}
+// Under-chart line: mostly-FSD vs mostly-manual drives in [A,B]. Drives without
+// FSD data are excluded from both groups (unknown is not manual).
+function effSetFsdLine(m, A, B) {
+  const el = document.getElementById('effDistFsd_' + m.k);
+  if (!el) return;
+  if (!m.hasFsd || A == null) { el.textContent = ''; return; }
+  const f = effGroupStats(m, A, B, d => d.fsd != null && d.fsd >= 0.5);
+  const h = effGroupStats(m, A, B, d => d.fsd != null && d.fsd < 0.5);
+  const unk = m.drives.filter(d => d.fsd == null && d.e > A && d.s < B).length;
+  const part = (label, g) => g.n
+    ? `${label}: ${g.n} drive${g.n === 1 ? '' : 's'} · ${g.mi < 10 ? g.mi.toFixed(1) : Math.round(g.mi).toLocaleString()} mi · ${g.wh.toFixed(0)} Wh/mi (${(m.rated / g.wh * 100).toFixed(0)}%)`
+    : `${label}: no drives`;
+  let txt = `${part('Mostly FSD', f)}  ·  ${part('Mostly manual', h)}`;
+  if (f.n && h.n) {
+    const diff = f.wh - h.wh;
+    txt += `  ·  FSD ${Math.abs(diff) < 0.5 ? 'matches manual' : Math.abs(diff).toFixed(0) + ' Wh/mi ' + (diff < 0 ? 'less' : 'more')}`;
+  }
+  if (unk) txt += `  ·  ${unk} drive${unk === 1 ? '' : 's'} without FSD data excluded`;
+  el.textContent = txt;
+}
 function effSummaryText(m, w, prefix) {
   const mi = w.mi < 10 ? w.mi.toFixed(1) : Math.round(w.mi).toLocaleString();
   return `${prefix} · ${mi} mi · ${w.n} drive${w.n === 1 ? '' : 's'} · ${w.wh.toFixed(0)} Wh/mi · ${(m.rated / w.wh * 100).toFixed(0)}% of rated`;
@@ -5358,9 +5413,15 @@ async function renderEffDistance(vins) {
   let results;
   try {
     results = await Promise.all(vins.map(async vin => {
-      const r = await fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${vin}&limit=2000`);
+      const [r, fsdResp] = await Promise.all([
+        fetch(`${BRIDGE_BASE}/sessions/driving?secret=${secret}&vin=${vin}&limit=2000`),
+        fetch(`${BRIDGE_BASE}/drives/fsd?secret=${secret}&vin=${vin}&days=${chartRangeDays}`)
+          .then(x => x.ok ? x.json() : {}).catch(() => ({}))
+      ]);
       const d = await r.json();
-      return { vin, prep: effDistPrep(d.sessions || [], cutoff) };
+      const fsdByStart = {};
+      (fsdResp.drives || []).forEach(x => { fsdByStart[x.start_ts] = x.fsd_mi; });
+      return { vin, prep: effDistPrep(d.sessions || [], cutoff, fsdByStart) };
     }));
   } catch (e) {
     if (token === effDistToken) body.innerHTML = '<div class="empty">Could not load drive data.</div>';
@@ -5377,7 +5438,8 @@ async function renderEffDistance(vins) {
         <button class="chip" id="effDistReset_${k}" style="display:none;" onclick="resetEffDist('${k}')">↺ Reset zoom</button>
       </div>
       ${ok ? `<div style="position:relative; height:240px;"><canvas id="effDistCanvas_${k}"></canvas></div>
-        <div id="effDistNotes_${k}" style="margin-top:8px; font-size:12px; color:var(--text-soft); line-height:1.6;"></div>`
+        <div id="effDistNotes_${k}" style="margin-top:8px; font-size:12px; color:var(--text-soft); line-height:1.6;"></div>
+        <div id="effDistFsd_${k}" style="font-size:12px; color:#1d4ed8; line-height:1.6;"></div>`
         : '<div class="empty">Not enough drives with odometer data in this range.</div>'}
     </div>`;
   }).join('');
@@ -5388,17 +5450,20 @@ function buildEffDistChart(vin, prep) {
   const lo = drives[0].s, hi = drives[drives.length - 1].e;
   const roll = effRolling(drives, rated, Math.max(15, (hi - lo) / 40));
   const dotColor = drives.map(d => effPctColor(d.pct, 0.8));
+  const hasFsd = drives.some(d => d.fsd != null);
   const chart = new Chart(document.getElementById('effDistCanvas_' + k).getContext('2d'), {
     type: 'line',
-    plugins: [dragSelectPlugin],
+    plugins: [dragSelectPlugin, effFsdShadePlugin],
     data: {
       datasets: [
         { label: 'Drives', data: drives.map(d => ({ x: d.mid, y: d.pct })), showLine: false,
           pointRadius: drives.map(d => Math.max(3, Math.min(8, 2.5 + Math.sqrt(d.dist)))), pointHoverRadius: 9,
-          pointBackgroundColor: dotColor, pointBorderColor: dotColor, order: 2 },
+          pointBackgroundColor: dotColor,
+          pointBorderColor: drives.map((d, i) => (d.fsd != null && d.fsd >= 0.5) ? '#1d4ed8' : dotColor[i]),
+          pointBorderWidth: drives.map(d => (d.fsd != null && d.fsd >= 0.5) ? 2.5 : 1), order: 2 },
         { label: 'Rolling avg', data: roll, borderColor: '#2563eb', borderWidth: 2, pointRadius: 0, tension: 0.25, order: 1 },
         { label: 'Rated (100%)', data: [{ x: lo, y: 100 }, { x: hi, y: 100 }], borderColor: 'rgba(120,120,120,.55)', borderDash: [6, 4], borderWidth: 1, pointRadius: 0, order: 3 }
-      ]
+      ].concat(hasFsd ? [{ label: 'FSD engaged (shaded)', data: [], backgroundColor: 'rgba(37,99,235,.30)', borderColor: 'rgba(37,99,235,.55)', borderWidth: 1 }] : [])
     },
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -5418,7 +5483,7 @@ function buildEffDistChart(vin, prep) {
               if (c.dataset.label === 'Drives') {
                 const d = drives[c.dataIndex];
                 const when = new Date(d.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-                return `${when} · ${d.dist.toFixed(1)} mi · ${d.wh.toFixed(0)} Wh/mi · ${d.pct.toFixed(0)}%`;
+                return `${when} · ${d.dist.toFixed(1)} mi · ${d.wh.toFixed(0)} Wh/mi · ${d.pct.toFixed(0)}%` + (d.fsd != null ? ` · FSD ${Math.round(d.fsd * 100)}%` : '');
               }
               return `Rolling avg: ${c.parsed.y.toFixed(0)}%`;
             }
@@ -5427,12 +5492,13 @@ function buildEffDistChart(vin, prep) {
       }
     }
   });
-  const m = { k, drives, rated, lo, hi, base: '' };
+  const m = { k, drives, rated, lo, hi, hasFsd, base: '' };
   m.base = effSummaryText(m, effWindow(drives, lo, hi), `${effFmtMi(lo)} → ${effFmtMi(hi)} mi`)
          + (prep.skipped ? ` · ${prep.skipped} drive${prep.skipped === 1 ? '' : 's'} without odometer skipped` : '');
   chart._eff = m;
   effDistCharts[k] = chart;
   document.getElementById('effDistNotes_' + k).textContent = m.base;
+  effSetFsdLine(m, lo, hi);
   attachDragSelect(chart, (a, b) => applyEffDistZoom(chart, a, b), () => resetEffDist(k));
 }
 function applyEffDistZoom(chart, A, B) {
@@ -5440,6 +5506,7 @@ function applyEffDistZoom(chart, A, B) {
   const w = effWindow(m.drives, A, B);
   if (!w.n) {
     if (notesEl) notesEl.textContent = `Selected ${effFmtMi(A)} → ${effFmtMi(B)} mi · no drives in this span`;
+    effSetFsdLine(m, null, null);
     chart.draw();
     return;
   }
@@ -5453,6 +5520,7 @@ function applyEffDistZoom(chart, A, B) {
   const btn = document.getElementById('effDistReset_' + m.k);
   if (btn) btn.style.display = '';
   if (notesEl) notesEl.textContent = effSummaryText(m, w, `Selected ${effFmtMi(A)} → ${effFmtMi(B)} mi`);
+  effSetFsdLine(m, A, B);
 }
 function resetEffDist(k) {
   const chart = effDistCharts[k];
@@ -5464,6 +5532,7 @@ function resetEffDist(k) {
   if (btn) btn.style.display = 'none';
   const notesEl = document.getElementById('effDistNotes_' + k);
   if (notesEl) notesEl.textContent = chart._eff.base;
+  effSetFsdLine(chart._eff, chart._eff.lo, chart._eff.hi);
 }
 
 // ---- Battery chart: drag A→B to zoom, Reset to restore -----------------------
